@@ -1,0 +1,21 @@
+provider:
+  name: "document_analyzer"
+  models:
+    analysis_model:
+      path: "/home/swr/tools/models/my_models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf"  # Update with actual model path
+      n_ctx: 2048
+      n_threads: 4
+      n_batch: 512
+      use_gpu: true  # Enable GPU acceleration if available
+  max_models: 2
+
+flow:
+  name: "document_analyzer"
+  model_name: "analysis_model"
+  prompt_template: "./prompts/analysis.txt"
+  generation_params:
+    max_tokens: 500
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 40
+    repeat_penalty: 1.1 

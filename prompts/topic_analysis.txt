@@ -1,0 +1,6 @@
+Analyze the main topics in the following document:
+
+{text}
+
+Provide your analysis in JSON format matching this schema:
+{schema}

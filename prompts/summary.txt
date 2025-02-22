@@ -1,0 +1,6 @@
+Provide both a brief and detailed summary of the following document:
+
+{text}
+
+Provide your summaries in JSON format matching this schema:
+{schema}

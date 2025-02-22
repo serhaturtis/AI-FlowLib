@@ -1,0 +1,6 @@
+Analyze the sentiment and extract key phrases from the following document:
+
+{text}
+
+Provide your analysis in JSON format matching this schema:
+{schema}
