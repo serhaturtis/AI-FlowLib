@@ -1,0 +1,4 @@
+llama-cpp-python>=0.2.0
+pydantic>=2.0.0
+torch>=2.0.0  # Optional: for GPU detection
+numpy>=1.20.0 

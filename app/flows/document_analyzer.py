@@ -9,7 +9,7 @@ from ..models.analysis import (
     Document, AnalysisResult, TopicAnalysis,
     SentimentAnalysis, Summary
 )
-from ..config.analyzer_config import AnalyzerConfig
+from ..config.app_config import AppConfig
 
 @flow("document_analyzer")
 @managed
@@ -19,7 +19,7 @@ class DocumentAnalyzer:
     def __init__(self):
         """Initialize analyzer."""
         # Load configuration
-        self.config = AnalyzerConfig.load()
+        self.config = AppConfig.load()
         
         # Create model config
         model_configs = {
@@ -70,7 +70,7 @@ class DocumentAnalyzer:
             top_k=self.config.Flow.Generation.TOP_K,
             repeat_penalty=self.config.Flow.Generation.REPEAT_PENALTY
         )
-        return TopicAnalysis.model_validate(result)
+        return result
     
     @stage(output_model=SentimentAnalysis)
     async def analyze_sentiment(self, text: str) -> SentimentAnalysis:
@@ -88,7 +88,7 @@ class DocumentAnalyzer:
             top_k=self.config.Flow.Generation.TOP_K,
             repeat_penalty=self.config.Flow.Generation.REPEAT_PENALTY
         )
-        return SentimentAnalysis.model_validate(result)
+        return result
     
     @stage(output_model=Summary)
     async def create_summary(self, text: str) -> Summary:
@@ -106,7 +106,7 @@ class DocumentAnalyzer:
             top_k=self.config.Flow.Generation.TOP_K,
             repeat_penalty=self.config.Flow.Generation.REPEAT_PENALTY
         )
-        return Summary.model_validate(result)
+        return result
     
     @pipeline(output_model=AnalysisResult)
     async def analyze(self, text: str) -> AnalysisResult:

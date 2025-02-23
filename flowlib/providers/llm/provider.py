@@ -3,21 +3,17 @@ from pathlib import Path
 import gc
 import sys
 import json
+import logging
 import threading
-
-try:
-    from llama_cpp import Llama, LlamaGrammar
-    HAVE_LLAMA = True
-except ImportError:
-    HAVE_LLAMA = False
-    Llama = Any  # type: ignore
-    LlamaGrammar = Any  # type: ignore
+from llama_cpp import Llama, LlamaGrammar
 
 from pydantic import BaseModel
 from ...core.errors.base import ResourceError, ErrorContext
 from ..base import Provider
 from .models import ModelConfig, GenerationParams
 from .utils import GPUConfigManager
+
+logger = logging.getLogger(__name__)
 
 class LLMProvider(Provider):
     """LLM provider implementation."""
@@ -45,13 +41,6 @@ class LLMProvider(Provider):
             max_models: Maximum number of models to keep loaded
         """
         super().__init__(name)
-        
-        if not HAVE_LLAMA:
-            raise ImportError(
-                "llama-cpp-python is not installed. "
-                "Install it with: pip install llama-cpp-python"
-            )
-            
         self.model_configs = model_configs
         self.max_models = max_models
         self._models: Dict[str, Llama] = {}
@@ -243,7 +232,7 @@ class LLMProvider(Provider):
         model_name: str,
         response_model: Type[BaseModel],
         **generation_params: Any
-    ) -> Dict[str, Any]:
+    ) -> BaseModel:
         """Generate structured output using LlamaGrammar.
         
         Args:
@@ -253,7 +242,7 @@ class LLMProvider(Provider):
             **generation_params: Generation parameters
             
         Returns:
-            Generated output as dictionary
+            Validated instance of the response_model
             
         Raises:
             ResourceError: If generation fails
@@ -269,6 +258,14 @@ class LLMProvider(Provider):
             
             # Filter and validate generation parameters
             params = self._filter_generation_params(generation_params)
+            
+            # Log generation parameters
+            logger.info("Starting LLM generation with parameters:")
+            logger.info(f"  Model: {model_name}")
+            logger.info(f"  Response Model: {response_model.__name__}")
+            logger.info("  Generation Parameters:")
+            for name, value in params.items():
+                logger.info(f"    {name}: {value}")
             
             # Generate with grammar
             output = model.create_completion(
@@ -289,12 +286,30 @@ class LLMProvider(Provider):
             text = output['choices'][0].get('text', '').strip()
             
             try:
-                # Parse response with pydantic model
-                data = json.loads(text)
-                return data  # Return raw data for validation by caller
+                # Parse JSON with more lenient decoder settings
+                decoder = json.JSONDecoder(strict=False)
+                data = json.loads(text, strict=False)
+                
+                # Recursively sanitize strings in the parsed data
+                def sanitize_strings(obj):
+                    if isinstance(obj, str):
+                        # Replace common control characters with their escaped versions
+                        return obj.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                    elif isinstance(obj, dict):
+                        return {k: sanitize_strings(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [sanitize_strings(item) for item in obj]
+                    return obj
+                
+                sanitized_data = sanitize_strings(data)
+                
+                # Validate with pydantic model
+                validated_model = response_model.model_validate(sanitized_data)
+                return validated_model
+                
             except Exception as e:
                 raise ResourceError(
-                    f"Failed to parse model output: {str(e)}",
+                    f"Failed to parse or validate model output: {str(e)}",
                     ErrorContext.create(
                         response_text=text,
                         model_name=model_name,

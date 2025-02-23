@@ -1,10 +1,9 @@
 """Configuration for document analyzer."""
 
-from typing import Dict, Any
 from flowlib import config
 
 @config
-class AnalyzerConfig:
+class AppConfig:
     """Configuration for document analyzer."""
     
     class Provider:
@@ -14,8 +13,8 @@ class AnalyzerConfig:
         
         class Models:
             """Model configurations."""
-            ANALYSIS_MODEL: str = "/home/swr/tools/models/my_models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf"
-            N_CTX: int = 2048
+            ANALYSIS_MODEL: str = "/model/path/to/your/analysis_model.gguf"
+            N_CTX: int = 4096
             N_THREADS: int = 4
             N_BATCH: int = 512
             USE_GPU: bool = True
@@ -28,7 +27,7 @@ class AnalyzerConfig:
         
         class Generation:
             """Generation parameters."""
-            MAX_TOKENS: int = 500
+            MAX_TOKENS: int = 2048
             TEMPERATURE: float = 0.7
             TOP_P: float = 0.9
             TOP_K: int = 40

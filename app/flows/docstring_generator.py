@@ -10,7 +10,7 @@ from flowlib import flow, stage, pipeline, managed
 from flowlib.providers.llm import ModelConfig
 
 from ..models.docstring import FunctionInfo, DocstringResult, FileResult
-from ..config.analyzer_config import AnalyzerConfig
+from ..config.app_config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class DocstringGenerator:
     def __init__(self):
         """Initialize generator."""
         # Load configuration
-        self.config = AnalyzerConfig.load()
+        self.config = AppConfig.load()
         
         # Create model config
         model_configs = {
@@ -110,12 +110,13 @@ class DocstringGenerator:
         # Get the function definition and body
         func_lines = source_lines[node.lineno - 1:node.end_lineno]
         
-        # Try to get comments before the function/decorators
+        # Try to get comments (but not docstrings) before the function/decorators
         start_line = max(0, first_decorator_line - 3)
         context_before = []
         for line in source_lines[start_line:first_decorator_line - 1]:
             line = line.strip()
-            if line and (line.startswith('#') or line.startswith('"""') or line.startswith("'''")):
+            # Only collect actual comments, not docstrings
+            if line and line.startswith('#'):
                 context_before.append(line)
         
         # Combine everything in the correct order
@@ -137,112 +138,108 @@ class DocstringGenerator:
             cleaned_lines.append(line)
             
         return '\n'.join(line.rstrip() for line in cleaned_lines)
-    
+
+    def _has_misplaced_docstring(self, node: ast.FunctionDef, source_lines: List[str]) -> bool:
+        """Check if function has a misplaced docstring (before the function definition).
+        
+        Args:
+            node: The AST node for the function
+            source_lines: The source file lines
+            
+        Returns:
+            True if a misplaced docstring is found
+        """
+        # Get the actual start line, considering decorators
+        start_line = node.lineno
+        if node.decorator_list:
+            start_line = min(d.lineno for d in node.decorator_list)
+        
+        # Look at lines before the function/decorator
+        start_check = max(0, start_line - 5)
+        for line_num in range(start_check, start_line):
+            line = source_lines[line_num].strip()
+            # Check for docstring markers, including malformed ones with code blocks
+            if ('"""' in line or "'''" in line or 
+                (line.startswith('"""') and "```" in line)):
+                return True
+        
+        # Also check between decorators and function definition
+        if node.decorator_list:
+            for line_num in range(start_line, node.lineno):
+                line = source_lines[line_num].strip()
+                if '"""' in line or "'''" in line:
+                    return True
+        
+        return False
+
+    def _get_function_definition_line(self, node: ast.FunctionDef, source_lines: List[str]) -> int:
+        """Get the actual function definition line number.
+        
+        Args:
+            node: The AST node for the function
+            source_lines: The source file lines
+            
+        Returns:
+            The line number where the function definition starts
+        """
+        # Start from the AST's reported line number
+        def_line = node.lineno - 1
+        
+        # Look for the actual 'def' keyword
+        while def_line < len(source_lines):
+            if source_lines[def_line].lstrip().startswith('def '):
+                break
+            def_line += 1
+        
+        return def_line
+
     def _extract_functions(self, file_path: str) -> Tuple[List[FunctionInfo], str]:
         """Extract function information from Python file."""
-        logger.debug(f"Extracting functions from {file_path}")
-        
         with open(file_path, 'r') as f:
             content = f.read()
             
-        # Get source lines for context extraction
-        source_lines = content.splitlines()
-        logger.debug(f"File has {len(source_lines)} lines")
-        
-        functions = []
         tree = ast.parse(content)
+        source_lines = content.splitlines()
+        functions = []
         
-        # First, collect imports and top-level definitions
-        imports = []
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                imports.append(ast.unparse(node))
-        logger.debug(f"Found {len(imports)} imports")
-        
-        # Helper to find parent class
-        def find_parent_class(node):
-            parent = getattr(node, 'parent', None)
-            while parent and not isinstance(parent, ast.ClassDef):
-                parent = getattr(parent, 'parent', None)
-            return parent
-        
-        # Then process functions
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef):
                 try:
-                    logger.debug(f"Processing function: {node.name} at line {node.lineno}")
-                    
                     # Skip if function already has a docstring
                     if ast.get_docstring(node):
-                        logger.debug(f"Skipping {node.name} - already has docstring")
                         continue
-                        
+                    
+                    # Get function info
                     args = [arg.arg for arg in node.args.args]
-                    returns = None
-                    if node.returns:
-                        returns = ast.unparse(node.returns)
+                    returns = ast.unparse(node.returns) if node.returns else None
                     
-                    # Get function code with context
-                    code = self._get_function_context(node, source_lines)
-                    logger.debug(f"Got context for {node.name}:\n{code}")
+                    # Find the complete function signature
+                    def_line = node.lineno - 1
+                    end_line = def_line
                     
-                    # For class methods, add class context
-                    parent_class = find_parent_class(node)
-                    if parent_class:
-                        logger.debug(f"Found parent class for {node.name}: {parent_class.name}")
-                        # Get class definition line
-                        class_def = source_lines[parent_class.lineno - 1].rstrip()
-                        # Add class context with proper indentation
-                        class_lines = [class_def + ':']
-                        # Add an empty line after class definition for better readability
-                        class_lines.append('')
-                        # Indent the function code
-                        indented_code = '\n'.join(f"    {line}" for line in code.splitlines())
-                        code = '\n'.join(class_lines + [indented_code])
+                    # Find where the function body starts (after all parameters)
+                    while end_line < len(source_lines):
+                        line = source_lines[end_line].strip()
+                        if line.endswith(':'):  # Found the end of signature
+                            break
+                        end_line += 1
                     
-                    # Add relevant imports at the top if they're used in the function
-                    func_code = ast.unparse(node)
-                    relevant_imports = []
-                    for imp in imports:
-                        try:
-                            # Extract imported names more accurately
-                            if ' import ' not in imp:
-                                continue  # Skip malformed imports
-                            
-                            if imp.startswith('from '):
-                                # Handle 'from module import name1, name2'
-                                module_part, names_part = imp.split(' import ', 1)
-                                names = [n.strip().split(' as ')[0] for n in names_part.split(',')]
-                            else:
-                                # Handle 'import module' or 'import module as alias'
-                                module_names = imp.split(' import ', 1)[1]
-                                names = [n.strip().split(' as ')[0] for n in module_names.split(',')]
-                            
-                            # Check if any of the imported names are used in the function
-                            if any(name in func_code for name in names):
-                                relevant_imports.append(imp)
-                        except Exception as e:
-                            logger.debug(f"Skipping malformed import '{imp}': {str(e)}")
-                            continue
-                    
-                    if relevant_imports:
-                        logger.debug(f"Adding {len(relevant_imports)} relevant imports for {node.name}")
-                        code = '\n'.join(relevant_imports) + '\n\n' + code
+                    # Get the complete signature
+                    signature_lines = source_lines[def_line:end_line + 1]
+                    complete_signature = '\n'.join(signature_lines)
                     
                     functions.append(FunctionInfo(
                         name=node.name,
                         args=args,
                         returns=returns,
-                        code=code,
-                        line_number=node.lineno
+                        code=complete_signature,  # Use complete signature
+                        line_number=def_line + 1  # Convert back to 1-based
                     ))
-                    logger.debug(f"Successfully processed function: {node.name}")
+                    
                 except Exception as e:
                     logger.error(f"Error processing function {node.name}: {str(e)}")
-                    logger.error(traceback.format_exc())
                     raise
         
-        logger.debug(f"Found {len(functions)} functions to process")
         return functions, content
     
     def _validate_docstring(self, docstring: str, function: FunctionInfo) -> float:
@@ -336,67 +333,121 @@ class DocstringGenerator:
         # Log the result
         logger.info("LLM Response:")
         logger.info("-" * 40)
-        logger.info(json.dumps(result, indent=2))
+        logger.info(json.dumps(result.model_dump(), indent=2))
         logger.info("=" * 80)
         
-        # Validate and potentially adjust confidence
-        validated_result = DocstringResult.model_validate(result)
-        validated_result.confidence = self._validate_docstring(
-            validated_result.docstring,
+        # Adjust confidence based on validation
+        result.confidence = self._validate_docstring(
+            result.docstring,
             function
         )
         
-        return validated_result
+        return result
     
     def _update_file_content(self, content: str, functions: List[FunctionInfo], docstrings: List[DocstringResult]) -> str:
-        """Update file content with generated docstrings.
-        
-        Args:
-            content: Original file content
-            functions: List of extracted functions
-            docstrings: List of generated docstrings
-            
-        Returns:
-            Updated file content with new docstrings
-        """
-        if not functions:  # No functions to update
+        """Update file content with generated docstrings."""
+        if not functions:
             return content
             
-        # Convert content to lines for easier manipulation
         lines = content.splitlines()
-        
-        # Sort functions by line number in reverse order to avoid
-        # line number changes affecting subsequent insertions
         updates = list(zip(functions, docstrings))
         updates.sort(key=lambda x: x[0].line_number, reverse=True)
         
         for func, doc_result in updates:
-            # Skip if docstring is empty or just whitespace
             if not doc_result.docstring or doc_result.docstring.isspace():
                 continue
                 
-            # Find the line after function definition
-            def_line = func.line_number - 1  # Convert to 0-based index
-            
-            # Skip if there's already a docstring
-            next_lines = lines[def_line:def_line + 3]
-            if any('"""' in line or "'''" in line for line in next_lines):
-                continue
-                
-            # Get proper indentation
+            # Get function line and indentation
+            def_line = func.line_number - 1
             indent = len(lines[def_line]) - len(lines[def_line].lstrip())
             
-            # Format docstring with proper indentation
-            docstring_lines = [' ' * indent + '"""' + doc_result.docstring.split('\n')[0] + '"""']
-            if '\n' in doc_result.docstring:
-                docstring_lines = [
-                    ' ' * indent + '"""' + doc_result.docstring.split('\n')[0],
-                    *[' ' * indent + line for line in doc_result.docstring.split('\n')[1:-1]],
-                    ' ' * indent + '"""'
-                ]
+            # Find the end of function definition (where the colon is)
+            end_def_line = def_line
+            while end_def_line < len(lines):
+                if lines[end_def_line].rstrip().endswith(':'):
+                    break
+                end_def_line += 1
             
-            # Insert docstring after function definition
-            lines[def_line:def_line] = [''] + docstring_lines + ['']
+            # Format docstring with proper indentation and line breaks
+            docstring_lines = []
+            base_indent = ' ' * (indent + 4)  # Base indentation for docstring content
+            
+            # Clean up the docstring: replace escaped newlines and normalize sections
+            clean_docstring = (
+                doc_result.docstring
+                .replace('\\n', '\n')  # Replace escaped newlines with actual newlines
+                .replace('\n\n', '\n')  # Normalize multiple newlines
+            )
+            
+            # Split into sections and clean up
+            sections = []
+            current_section = []
+            
+            for line in clean_docstring.split('\n'):
+                line = line.strip()
+                if not line:
+                    if current_section:
+                        sections.append('\n'.join(current_section))
+                        current_section = []
+                    continue
+                
+                # Check if this is a section header
+                if line.startswith(('Args:', 'Returns:', 'Raises:')):
+                    if current_section:
+                        sections.append('\n'.join(current_section))
+                        current_section = []
+                    sections.append(line)
+                    continue
+                
+                # Check if this is a parameter description
+                if ': ' in line and any(line.startswith(param + ' ') for param in func.args):
+                    if current_section:
+                        sections.append('\n'.join(current_section))
+                        current_section = []
+                    sections.append('    ' + line)  # Extra indent for params
+                    continue
+                
+                current_section.append(line)
+            
+            if current_section:
+                sections.append('\n'.join(current_section))
+            
+            # Format the final docstring
+            docstring_lines = [base_indent + '"""']
+            
+            # Add each section with proper spacing
+            for i, section in enumerate(sections):
+                if i > 0:  # Add blank line between sections
+                    docstring_lines.append('')
+                
+                if section.startswith(('Args:', 'Returns:', 'Raises:')):
+                    docstring_lines.append(base_indent + section)
+                elif section.startswith('    '):  # Parameter description
+                    docstring_lines.append(base_indent + section)
+                else:
+                    # Wrap long lines
+                    words = section.split()
+                    current_line = []
+                    current_length = 0
+                    
+                    for word in words:
+                        if current_length + len(word) + 1 > 80:  # Standard Python line length
+                            docstring_lines.append(base_indent + ' '.join(current_line))
+                            current_line = [word]
+                            current_length = len(word)
+                        else:
+                            current_line.append(word)
+                            current_length += len(word) + 1
+                    
+                    if current_line:
+                        docstring_lines.append(base_indent + ' '.join(current_line))
+            
+            docstring_lines.append(base_indent + '"""')
+            
+            # Insert docstring after the complete function definition
+            lines.insert(end_def_line + 1, '')  # Empty line after def
+            for line in reversed(docstring_lines):
+                lines.insert(end_def_line + 1, line)
         
         return '\n'.join(lines)
     
