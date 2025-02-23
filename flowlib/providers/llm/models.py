@@ -1,3 +1,6 @@
+"""Model configuration and generation parameters."""
+
+from typing import Optional
 from pydantic import BaseModel, Field
 
 class GenerationParams(BaseModel):
@@ -11,6 +14,7 @@ class GenerationParams(BaseModel):
 class ModelConfig(BaseModel):
     """Model configuration."""
     path: str = Field(..., description="Path to model file")
+    model_type: str = Field(default="default", description="Type of model for prompt formatting (e.g., llama2, chatml, phi2)")
     n_ctx: int = Field(default=2048, gt=0)
     n_threads: int = Field(default=4, gt=0)
     n_batch: int = Field(default=512, gt=0)

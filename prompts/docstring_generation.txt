@@ -20,4 +20,4 @@ Your response must be a JSON object matching this schema:
 
 Important: The docstring field should contain only the raw docstring text, without any code blocks, backticks, or markdown formatting. It should be text that can be directly inserted between Python triple quotes.
 
-Write your response: 
+Write your response:

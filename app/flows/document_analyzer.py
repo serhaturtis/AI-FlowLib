@@ -25,6 +25,7 @@ class DocumentAnalyzer:
         model_configs = {
             "analysis_model": ModelConfig(
                 path=self.config.Provider.Models.ANALYSIS_MODEL,
+                model_type=self.config.Provider.Models.MODEL_TYPE,
                 n_ctx=self.config.Provider.Models.N_CTX,
                 n_threads=self.config.Provider.Models.N_THREADS,
                 n_batch=self.config.Provider.Models.N_BATCH,

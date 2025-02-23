@@ -12,6 +12,7 @@ from ...core.errors.base import ResourceError, ErrorContext
 from ..base import Provider
 from .models import ModelConfig, GenerationParams
 from .utils import GPUConfigManager
+from .prompt_templates import format_prompt, format_chat
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +251,7 @@ class LLMProvider(Provider):
         """
         try:
             model = self.get_model(model_name)
+            config = self.model_configs[model_name]
             
             # Create grammar from pydantic model
             schema = response_model.model_json_schema()
@@ -267,9 +269,12 @@ class LLMProvider(Provider):
             for name, value in params.items():
                 logger.info(f"    {name}: {value}")
             
+            # Format prompt according to model type
+            formatted_prompt = format_prompt(prompt, config.model_type)
+            
             # Generate with grammar
             output = model.create_completion(
-                prompt=prompt,
+                prompt=formatted_prompt,
                 grammar=grammar,
                 **params
             )
