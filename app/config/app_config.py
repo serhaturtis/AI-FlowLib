@@ -13,7 +13,7 @@ class AppConfig:
         
         class Models:
             """Model configurations."""
-            ANALYSIS_MODEL: str = "/path/to/your/analysis_model.gguf"
+            ANALYSIS_MODEL: str = "/path/to/model"
             MODEL_TYPE: str = "llama3"  # Model type for prompt formatting (chatml, llama2, phi2, etc.)
             N_CTX: int = 4096
             N_THREADS: int = 4

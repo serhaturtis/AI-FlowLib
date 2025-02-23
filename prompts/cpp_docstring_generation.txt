@@ -1,0 +1,25 @@
+You are a C++ documentation expert. Write a Doxygen-style docstring:
+
+Function Information:
+Name: {function_name}
+Class: {class_name}
+Arguments: {args}
+Return Type: {returns}
+
+Code:
+{code}
+
+Requirements:
+1. Write a clear brief description using /** ... */
+2. Document all parameters with @param
+3. Document return value with @return if applicable
+4. Include @throws for any exceptions
+5. Follow Doxygen format exactly
+6. Place docstring immediately before the function declaration
+
+Your response must be a JSON object matching this schema:
+{schema}
+
+Important: The docstring field should contain only the raw docstring text, without any code blocks, backticks, or markdown formatting. It should be text that can be directly inserted into the C++ file.
+
+Write your response: 

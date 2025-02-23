@@ -303,7 +303,7 @@ class DocstringGenerator:
         formatted_schema = self._format_schema(schema)
         
         # Format the prompt
-        formatted_prompt = self._load_prompt("docstring_generation.txt").format(
+        formatted_prompt = self._load_prompt("python_docstring_generation.txt").format(
             function_name=function.name,
             args=function.args,
             returns=function.returns,
