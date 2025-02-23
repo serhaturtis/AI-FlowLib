@@ -2,7 +2,8 @@
 
 from .flows.decorators import flow, stage, pipeline
 from .core.application.config import config
-from .core.application.factory import managed, ManagedResource
+from .core.resources.factory import managed
+from .core.resources.managed_resource import ManagedResource
 from .flows.builder import FlowBuilder
 from .flows.base import Flow
 from .core.models.context import Context

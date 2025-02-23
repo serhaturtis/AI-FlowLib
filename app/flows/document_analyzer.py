@@ -2,8 +2,8 @@
 
 from pathlib import Path
 from typing import Dict, Any
-from new_framework import flow, stage, pipeline, managed
-from new_framework.providers.llm import ModelConfig
+from flowlib import flow, stage, pipeline, managed
+from flowlib.providers.llm import ModelConfig
 
 from ..models.analysis import (
     Document, AnalysisResult, TopicAnalysis,

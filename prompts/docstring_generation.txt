@@ -1,0 +1,34 @@
+Write a Google-style docstring for this function:
+
+Name: {function_name}
+Arguments: {args}
+Return Type: {returns}
+
+Code:
+{code}
+
+Example docstring format:
+```python
+"""Calculate the sum of two numbers.
+
+Args:
+    x (int): First number
+    y (int): Second number
+
+Returns:
+    int: The sum of x and y
+"""
+```
+
+Your docstring must have:
+- One-line summary
+- Args section with types and descriptions
+- Returns section with type and description
+- Raises section (if applicable)
+
+Response format:
+{schema}
+
+Rate your confidence (0.0-1.0):
+1.0 = Complete understanding and documentation
+0.0 = Could not understand the function 

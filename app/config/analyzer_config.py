@@ -1,7 +1,7 @@
 """Configuration for document analyzer."""
 
 from typing import Dict, Any
-from new_framework import config
+from flowlib import config
 
 @config
 class AnalyzerConfig:

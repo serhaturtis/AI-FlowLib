@@ -1,6 +1,6 @@
 """Resource management system."""
 
-from typing import Any, Dict, Optional, Type, TypeVar, Callable
+from typing import Any, Dict, Optional, Type, TypeVar, Callable, AsyncGenerator
 from contextlib import asynccontextmanager
 import inspect
 from functools import wraps
@@ -77,7 +77,7 @@ class ResourceManager:
         resource_type: Type[T],
         *args: Any,
         **kwargs: Any
-    ) -> T:
+    ) -> AsyncGenerator[T, None]:
         """Context manager for resource lifecycle.
         
         Args:
