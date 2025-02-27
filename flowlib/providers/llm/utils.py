@@ -27,19 +27,22 @@ class GPUConfigManager:
             "series": ["RTX 40"],
             "optimal_batch": 1024,
             "supports_f16_kv": True,
-            "min_layers": 35
+            "min_layers": 28,
+            "system_reserve_mb": 2000
         },
         "Ampere": {
             "series": ["RTX 30"],
             "optimal_batch": 1024,
             "supports_f16_kv": True,
-            "min_layers": 32
+            "min_layers": 24,
+            "system_reserve_mb": 2000
         },
         "Turing": {
             "series": ["RTX 20", "GTX 16"],
             "optimal_batch": 512,
             "supports_f16_kv": True,
-            "min_layers": 28
+            "min_layers": 20,
+            "system_reserve_mb": 1500
         }
     }
 
@@ -154,35 +157,64 @@ class GPUConfigManager:
         logger.info(f"CUDA Version: {gpu_info.cuda_version}")
         logger.info(f"Architecture: {gpu_info.architecture}")
         
-        # Calculate available VRAM (leaving some for system)
-        available_vram = gpu_info.vram_total - 1000  # Leave 1GB for system
-        model_vram_mb = int(model_size_gb * 1024)
-        
         # Get architecture-specific settings
         arch_settings = self.GPU_ARCHITECTURES.get(
             gpu_info.architecture, 
-            {"optimal_batch": 512, "supports_f16_kv": True, "min_layers": 0}
+            {
+                "optimal_batch": 512,
+                "supports_f16_kv": True,
+                "min_layers": 20,
+                "system_reserve_mb": 2000
+            }
         )
         
-        # For 16GB cards, we can load all layers
-        if gpu_info.vram_total >= 16000:
+        # Calculate available VRAM with architecture-specific system reserve
+        available_vram = gpu_info.vram_total - arch_settings["system_reserve_mb"]
+        model_vram_mb = int(model_size_gb * 1024)
+        
+        # Adjust batch size based on model size
+        batch_size = min(
+            arch_settings["optimal_batch"],
+            max(128, int(arch_settings["optimal_batch"] * (8 / model_size_gb)))
+        )
+        
+        # Calculate GPU layers based on model size and available VRAM
+        if gpu_info.vram_total >= 24000:  # For 24GB+ cards
             n_gpu_layers = 100  # Load all layers
-        else:
-            # Calculate layers based on available VRAM, but ensure minimum per architecture
-            calculated_layers = int((available_vram / model_vram_mb) * 100)
-            n_gpu_layers = max(calculated_layers, arch_settings["min_layers"])
+        elif gpu_info.vram_total >= 16000:  # For 16GB cards
+            n_gpu_layers = min(80, int((available_vram / model_vram_mb) * 100))
+        elif gpu_info.vram_total >= 12000:  # For 12GB cards
+            n_gpu_layers = min(60, int((available_vram / model_vram_mb) * 100))
+        elif gpu_info.vram_total >= 8000:   # For 8GB cards
+            n_gpu_layers = min(40, int((available_vram / model_vram_mb) * 100))
+        else:  # For smaller cards
+            n_gpu_layers = min(32, int((available_vram / model_vram_mb) * 100))
+        
+        # Ensure minimum layers per architecture
+        n_gpu_layers = max(n_gpu_layers, arch_settings["min_layers"])
+        
+        # Adjust context size based on available VRAM
+        n_ctx = min(
+            4096,  # Maximum context size
+            max(512, int((available_vram / 2) / (model_size_gb * 128)))  # Scale with model size
+        )
         
         # Determine optimal configuration
         config = {
             "n_gpu_layers": n_gpu_layers,
-            "n_batch": arch_settings["optimal_batch"],
-            "n_ctx": 2048,  # Standard context size
+            "n_batch": batch_size,
+            "n_ctx": n_ctx,
             "f16_kv": arch_settings["supports_f16_kv"],
             "offload_kqv": True,
             "vocab_only": False,
             "use_mmap": True,
             "use_mlock": False
         }
+        
+        logger.info(f"GPU Configuration:")
+        logger.info(f"- GPU Layers: {config['n_gpu_layers']}")
+        logger.info(f"- Batch Size: {config['n_batch']}")
+        logger.info(f"- Context Size: {config['n_ctx']}")
         
         return config
     

@@ -1,15 +1,6 @@
 """Model configuration and generation parameters."""
 
-from typing import Optional
 from pydantic import BaseModel, Field
-
-class GenerationParams(BaseModel):
-    """Generation parameters validation."""
-    max_tokens: int = Field(default=100, gt=0)
-    temperature: float = Field(default=0.7, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.9, ge=0.0, le=1.0)
-    top_k: int = Field(default=40, ge=0)
-    repeat_penalty: float = Field(default=1.1, ge=1.0)
 
 class ModelConfig(BaseModel):
     """Model configuration."""
@@ -18,4 +9,5 @@ class ModelConfig(BaseModel):
     n_ctx: int = Field(default=2048, gt=0)
     n_threads: int = Field(default=4, gt=0)
     n_batch: int = Field(default=512, gt=0)
-    use_gpu: bool = Field(default=True, description="Whether to use GPU if available") 
+    use_gpu: bool = Field(default=True, description="Whether to use GPU if available")
+    n_gpu_layers: int = Field(default=-1, description="Number of layers to offload to GPU. -1 means use all layers, 0 means CPU only") 

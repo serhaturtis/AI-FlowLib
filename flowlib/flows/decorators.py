@@ -11,6 +11,7 @@ from .base import Flow
 from ..core.models.context import Context
 from ..core.models.results import FlowResult, FlowStatus
 from ..core.errors.base import ValidationError, ErrorContext
+from ..core.resources import ResourceRegistry
 
 T = TypeVar('T')
 F = TypeVar('F', bound=Callable)
@@ -61,8 +62,7 @@ def flow(name: Optional[str] = None, **metadata: Any) -> Callable[[Type[T]], Typ
             
         if not hasattr(cls, '__aexit__'):
             async def __aexit__(self, exc_type, exc_val, exc_tb):
-                if hasattr(self, 'cleanup'):
-                    await self.cleanup()
+                pass
             cls.__aexit__ = __aexit__
         
         return cls
@@ -182,9 +182,14 @@ def pipeline(
                         )
                     ) from e
                 raise
-            
+        
+        # Store pipeline attributes
+        wrapper._pipeline = True
+        wrapper.input_model = input_model
+        wrapper.output_model = output_model
+        
         return wrapper
     
     if func is None:
         return decorator
-    return decorator(func) 
+    return decorator(func)

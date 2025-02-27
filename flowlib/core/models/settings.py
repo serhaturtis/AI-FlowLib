@@ -46,41 +46,6 @@ class RetryConfig(BaseModel):
             raise ValueError('max_delay must be greater than base_delay')
         return v
 
-class GenerationParams(BaseModel):
-    """Parameters for controlling LLM generation."""
-    
-    max_tokens: int = Field(
-        default=2048,
-        ge=1,
-        description="Maximum number of tokens to generate"
-    )
-    temperature: float = Field(
-        default=0.8,
-        ge=0.0,
-        le=1.0,
-        description="Controls randomness (0-1, lower is more deterministic)"
-    )
-    top_p: float = Field(
-        default=0.95,
-        ge=0.0,
-        le=1.0,
-        description="Nucleus sampling parameter"
-    )
-    top_k: int = Field(
-        default=40,
-        ge=0,
-        description="Top-k sampling parameter"
-    )
-    repetition_penalty: float = Field(
-        default=1.1,
-        ge=1.0,
-        description="Penalty for repetition"
-    )
-    stop_sequences: List[str] = Field(
-        default_factory=list,
-        description="Optional list of sequences to stop generation"
-    )
-
 class ResourceRequirements(BaseModel):
     """Resource requirements for a flow."""
     
