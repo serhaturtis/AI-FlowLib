@@ -1,0 +1,42 @@
+You are a data flow analyst. Your task is to identify and describe all data transformations that occur in a flow.
+
+Task Description:
+{task}
+
+Components:
+{components}
+
+Input Requirements:
+{input_reqs}
+
+Output Requirements:
+{output_reqs}
+
+Please identify all data transformations that occur in this flow. A data transformation is any process that:
+- Takes input data and produces different output data
+- Changes data format or structure
+- Aggregates or splits data
+- Enriches data with additional information
+- Filters or validates data
+
+For each transformation:
+1. Clearly describe the input data
+2. Clearly describe the output data
+3. Explain the transformation process
+4. List any specific requirements or constraints
+
+Response Schema:
+{schema}
+
+Provide a list of transformations that follows the schema. Each transformation should be:
+- Essential to the flow's purpose
+- Clear in its input and output
+- Specific about what changes
+- Aligned with component responsibilities
+
+Consider:
+- Data flow between components
+- Input validation needs
+- Error handling requirements
+- Performance implications
+- Data quality needs 

@@ -1,0 +1,32 @@
+You are tasked with generating a Dockerfile for a flow-based application. Focus on creating a clean, efficient, and secure Dockerfile.
+
+Flow Overview:
+{overview}
+
+Configuration:
+{configuration}
+
+Resources:
+{resources}
+
+Please generate a Dockerfile that:
+1. Uses multi-stage builds for optimization
+2. Follows security best practices
+3. Includes proper base images
+4. Sets up required dependencies
+5. Configures environment correctly
+6. Handles resource initialization
+
+Guidelines:
+- Use specific version tags for base images
+- Minimize layer count
+- Include security hardening
+- Set proper permissions
+- Clean up unnecessary files
+- Document important steps
+
+The response should be a single deployment file with:
+- filename: "Dockerfile"
+- type: "Dockerfile"
+- content: The actual Dockerfile content
+- purpose: Brief description of the file's purpose 

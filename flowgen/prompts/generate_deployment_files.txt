@@ -1,0 +1,90 @@
+You are tasked with generating deployment and environment setup files for a flow-based application. These files should provide everything needed to deploy and run the flow in various environments.
+
+Flow Overview:
+{overview}
+
+Configuration:
+{configuration}
+
+Resources:
+{resources}
+
+Deployment Info:
+{deployment}
+
+Please generate deployment files that include:
+
+1. Docker Configuration
+- Dockerfile
+- Docker Compose configuration
+- Multi-stage build setup
+- Development vs production configs
+- Resource management
+- Volume mounts
+- Network setup
+
+2. Environment Setup
+- Requirements files
+- Environment variables
+- Virtual environment setup
+- Development tools
+- Test dependencies
+- Production dependencies
+
+3. Kubernetes Manifests
+- Deployment configurations
+- Service definitions
+- ConfigMaps and Secrets
+- Resource quotas
+- Autoscaling rules
+- Network policies
+- Volume claims
+
+4. CI/CD Pipeline
+- Build pipeline configuration
+- Test automation
+- Deployment stages
+- Environment promotion
+- Security scanning
+- Performance testing
+- Monitoring setup
+
+5. Infrastructure as Code
+- Resource definitions
+- Network configuration
+- Security groups
+- Load balancing
+- Auto-scaling
+- Monitoring setup
+- Backup configuration
+
+6. Monitoring and Logging
+- Log aggregation setup
+- Metrics collection
+- Alert configuration
+- Dashboard templates
+- Tracing setup
+- Health checks
+
+Each deployment file should include:
+- Clear documentation
+- Resource requirements
+- Security considerations
+- Scaling parameters
+- Backup procedures
+- Monitoring setup
+- Troubleshooting guides
+
+The files should follow these guidelines:
+- Use industry standard formats
+- Follow security best practices
+- Include comprehensive comments
+- Provide clear examples
+- Document all parameters
+- Include validation steps
+- Follow deployment best practices
+
+Response Schema:
+{schema}
+
+Generate deployment files that follow this structure and provide everything needed to deploy and manage the flow. 

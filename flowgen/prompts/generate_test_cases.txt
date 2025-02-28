@@ -1,0 +1,83 @@
+You are a test engineer. Your task is to generate test cases for a flow stage.
+
+Stage Name: {stage_name}
+
+Methods:
+{stage_methods}
+
+Input Model:
+{input_model}
+
+Output Model:
+{output_model}
+
+Error Handlers:
+{error_handlers}
+
+Please generate comprehensive test cases. Consider:
+
+1. Test Coverage
+   - Test each method
+   - Cover edge cases
+   - Test error paths
+   - Include validation
+   - Test async behavior
+
+2. Input Variations
+   - Valid inputs
+   - Invalid inputs
+   - Edge cases
+   - Empty/null values
+   - Large values
+
+3. Error Handling
+   - Expected errors
+   - Unexpected errors
+   - Recovery paths
+   - Resource cleanup
+   - State consistency
+
+4. Performance Testing
+   - Resource usage
+   - Response times
+   - Memory usage
+   - Concurrency
+   - Load handling
+
+5. Integration Points
+   - Data flow
+   - Resource access
+   - LLM interactions
+   - Error propagation
+   - State management
+
+Response Schema:
+{schema}
+
+For each test case:
+- Give it a clear name
+- Define its purpose
+- Specify input data
+- Define expected output
+- Include error cases
+- Add validation checks
+- Mark as example (is_example=true) if it demonstrates key functionality
+
+Include these types of tests:
+- Unit tests (mark 1-2 as examples)
+- Integration tests
+- Error handling tests (mark 1 as example)
+- Performance tests
+- Edge case tests
+
+Remember:
+- Be thorough
+- Test edge cases
+- Check errors
+- Validate outputs
+- Test resources
+- Consider async
+- Document tests
+- Mark clear, representative tests as examples
+
+Please provide the test cases you want to generate. 

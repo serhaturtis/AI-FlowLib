@@ -1,0 +1,78 @@
+You are tasked with generating comprehensive API documentation for a flow-based application. The documentation should clearly explain all public interfaces, methods, and data structures.
+
+Flow Overview:
+{overview}
+
+Components:
+{components}
+
+Implementation Details:
+{implementation}
+
+Please generate API documentation that includes:
+
+1. Module Overview
+- Purpose and functionality
+- Dependencies and requirements
+- Version compatibility
+- Import statements and setup
+
+2. Public Interfaces
+For each public interface:
+- Class/interface name and description
+- Constructor parameters and return types
+- Public methods and their signatures
+- Properties and attributes
+- Usage examples
+- Error handling and exceptions
+
+3. Data Models
+For each data model:
+- Model structure and fields
+- Field types and validation rules
+- Required vs optional fields
+- Default values
+- Relationships with other models
+- Example JSON/dict representations
+
+4. Methods and Functions
+For each method:
+- Method signature
+- Parameters and their types
+- Return value and type
+- Exceptions raised
+- Usage examples
+- Performance considerations
+- Threading/async behavior
+
+5. Error Handling
+- Error types and hierarchies
+- Error messages and codes
+- Recovery strategies
+- Best practices for error handling
+
+6. Resource Management
+- Resource initialization
+- Cleanup requirements
+- Context manager usage
+- Resource sharing between components
+
+7. Performance Notes
+- Complexity analysis
+- Memory usage
+- Threading considerations
+- Optimization tips
+
+The documentation should follow these guidelines:
+- Use clear, technical language
+- Include type hints and signatures
+- Provide code examples for common use cases
+- Document all parameters and return values
+- Include error scenarios and handling
+- Note any performance implications
+- Follow standard docstring format
+
+Response Schema:
+{schema}
+
+Generate detailed API documentation that follows this structure and provides all necessary information for developers to effectively use the API. 

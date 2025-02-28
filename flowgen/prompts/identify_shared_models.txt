@@ -1,0 +1,52 @@
+You are a data model designer. Your task is to identify and design models that are shared between the input and output of a flow.
+
+Flow Overview:
+{overview}
+
+Components:
+{components}
+
+Data Transformations:
+{transformations}
+
+Input Model:
+{input_model}
+
+Output Model:
+{output_model}
+
+Please identify models that should be shared between input and output. Look for:
+1. Common data structures used in both models
+2. Data that flows through transformations with same structure
+3. Reusable types that appear in multiple places
+4. Base models that could be extended
+
+For each shared model:
+- Give it a clear, descriptive name
+- Define all necessary fields
+- Include field descriptions
+- Add appropriate validation
+- Document its purpose and usage
+
+Response Schema:
+{schema}
+
+The response should be a dictionary where:
+- Keys are model names
+- Values are complete model definitions
+- Each model follows the schema
+
+Consider:
+- Reusability across the flow
+- Type consistency
+- Validation sharing
+- Documentation needs
+- Maintainability impact
+
+Remember:
+- Keep models focused and single-purpose
+- Use clear naming conventions
+- Include comprehensive documentation
+- Add appropriate validation rules
+- Consider extensibility needs
+- Maintain type safety 

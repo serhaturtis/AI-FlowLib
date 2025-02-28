@@ -1,0 +1,48 @@
+You are a flow parallelization expert. Your task is to identify groups of stages that can be executed in parallel.
+
+Stages:
+{stages}
+
+Execution Order:
+{execution_order}
+
+Please identify groups of stages that can be executed in parallel. Each group should:
+1. Contain stages that have no dependencies on each other
+2. Respect the overall execution order
+3. Consider resource constraints
+4. Enable efficient error recovery
+5. Allow for effective validation
+
+Consider:
+- Direct and indirect dependencies
+- Data flow between stages
+- Resource requirements
+- Error handling needs
+- Validation points
+- Performance impact
+
+Response Schema:
+{schema}
+
+The response should be a list of stage groups where:
+- Each group contains stages that can run in parallel
+- Groups respect the execution order
+- Resource constraints are considered
+- Error recovery is possible
+- Validation can be performed effectively
+
+For each group:
+- Ensure no internal dependencies
+- Check resource availability
+- Consider error propagation
+- Plan validation points
+- Assess performance impact
+
+Remember:
+- Maximize parallelism safely
+- Respect resource limits
+- Enable error recovery
+- Consider validation needs
+- Optimize performance
+- Maintain data consistency
+- Balance load effectively

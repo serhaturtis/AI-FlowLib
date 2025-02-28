@@ -1,0 +1,76 @@
+You are tasked with generating configuration file templates for a flow-based application. These templates should provide clear examples and documentation for all configurable aspects of the flow.
+
+Flow Overview:
+{overview}
+
+Configuration Options:
+{configuration}
+
+Resources:
+{resources}
+
+Please generate configuration templates that include:
+
+1. Environment Variables Template
+- Required environment variables
+- Optional environment variables
+- Default values
+- Variable descriptions
+- Validation rules
+- Example .env file
+
+2. Application Configuration Template
+- Core settings
+- Feature flags
+- Resource configurations
+- Performance tuning parameters
+- Logging configuration
+- Monitoring settings
+- Example config.yaml/json
+
+3. Resource Configuration Templates
+For each resource type:
+- Connection parameters
+- Authentication settings
+- Pool configurations
+- Timeout settings
+- Retry policies
+- Example resource configs
+
+4. Deployment Configuration Templates
+- Environment-specific settings
+- Scaling parameters
+- Resource allocation
+- Network configurations
+- Security settings
+- Example deployment configs
+
+5. Development Configuration Templates
+- Local development settings
+- Test configurations
+- Mock service settings
+- Debug options
+- Example development configs
+
+Each template should include:
+- Clear structure and organization
+- Detailed comments explaining each option
+- Default values where appropriate
+- Validation rules and constraints
+- Example values for different scenarios
+- Security considerations
+- Performance implications
+
+The templates should follow these guidelines:
+- Use standard configuration formats (YAML/JSON)
+- Include comprehensive comments
+- Provide clear examples
+- Note required vs optional settings
+- Document validation rules in config_schema
+- Document security implications
+- Follow configuration best practices
+
+Response Schema:
+{schema}
+
+Generate configuration templates that follow this structure and provide clear guidance for configuring the flow. Each template must include a config_schema that defines the structure and validation rules for the configuration. 

@@ -1,0 +1,78 @@
+You are a Python code generator. Your task is to generate the main flow implementation that orchestrates all stages.
+
+Flow Overview:
+{overview}
+
+Stages:
+{stages}
+
+Execution Order:
+{execution_order}
+
+Parallel Groups:
+{parallel_groups}
+
+Validation Points:
+{validation_points}
+
+Error Recovery:
+{error_recovery}
+
+Please generate a complete flow implementation. Consider:
+
+1. Flow Structure
+   - Flow class with proper decorators
+   - Resource initialization and cleanup
+   - State management
+   - Error handling
+   - Monitoring setup
+
+2. Stage Orchestration
+   - Sequential execution
+   - Parallel execution groups
+   - Validation points
+   - Error recovery paths
+   - State tracking
+
+3. Resource Management
+   - Resource initialization
+   - Resource cleanup
+   - Resource sharing
+   - Error handling
+
+4. Monitoring
+   - Performance metrics
+   - Progress tracking
+   - Error logging
+   - Validation results
+   - Resource usage
+
+5. Error Handling
+   - Stage failures
+   - Resource errors
+   - Validation failures
+   - Recovery strategies
+   - Error propagation
+
+Response Schema:
+{schema}
+
+The implementation should:
+- Follow flow framework patterns
+- Handle resources properly
+- Include comprehensive logging
+- Track performance metrics
+- Validate stage outputs
+- Handle errors gracefully
+- Support monitoring
+- Be well-documented
+
+Remember:
+- Initialize resources properly
+- Clean up on errors
+- Track flow state
+- Log important events
+- Monitor performance
+- Handle all error cases
+- Document assumptions
+- Consider testing 

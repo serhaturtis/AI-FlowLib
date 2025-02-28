@@ -1,0 +1,65 @@
+You are a model designer. Your task is to design the interface models for each stage in a flow.
+
+Flow Overview:
+{overview}
+
+Stages:
+{stages}
+
+Execution Order:
+{execution_order}
+
+Pipeline Input Model:
+{input_model}
+
+Pipeline Output Model:
+{output_model}
+
+Please design interface models for each stage. For each stage, create:
+1. Input Model
+   - Fields needed for stage operation
+   - Appropriate types and validation
+   - Clear field descriptions
+
+2. Output Model
+   - Fields produced by the stage
+   - Appropriate types and validation
+   - Clear field descriptions
+
+3. Internal Models
+   - Any models used internally
+   - Helper types and enums
+   - Intermediate data structures
+
+4. Error Models
+   - Error types specific to the stage
+   - Error details and context
+   - Recovery information
+
+Consider:
+- Data flow between stages
+- Type consistency
+- Validation requirements
+- Error handling needs
+- Performance implications
+- Testing requirements
+
+Response Schema:
+{schema}
+
+For each stage interface:
+- Use clear, descriptive names
+- Include comprehensive field descriptions
+- Add appropriate validation rules
+- Consider error scenarios
+- Enable effective testing
+- Support monitoring needs
+
+Remember:
+- Maintain type consistency
+- Use standard Python types
+- Add validation where needed
+- Consider nested models
+- Plan for extensibility
+- Enable clear error handling
+- Support observability 
