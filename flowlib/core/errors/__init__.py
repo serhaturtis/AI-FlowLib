@@ -1,34 +1,31 @@
-"""Error handling system for the framework."""
+"""Error handling for the flow framework.
+
+This package provides a comprehensive error handling system for the flow framework,
+including structured error types, error context, and error management.
+"""
 
 from .base import (
     BaseError,
     ValidationError,
+    ExecutionError,
+    StateError,
+    ConfigurationError,
     ResourceError,
+    ProviderError,
     ErrorContext,
+    ErrorManager,
+    default_manager,
 )
-from .handlers import (
-    ErrorHandler,
-    RetryHandler, 
-    FallbackHandler,
-    with_error_handling
-)
-from .manager import ErrorManager
 
 __all__ = [
-    # Base errors
-    'BaseError',
-    'ValidationError', 
-    'ResourceError',
-    
-    # Error context
-    'ErrorContext',
-    
-    # Error handlers
-    'ErrorHandler',
-    'RetryHandler',
-    'FallbackHandler',
-    'with_error_handling',
-    
-    # Error manager
-    'ErrorManager'
-] 
+    "BaseError",
+    "ValidationError",
+    "ExecutionError",
+    "StateError",
+    "ConfigurationError",
+    "ResourceError",
+    "ProviderError",
+    "ErrorContext",
+    "ErrorManager",
+    "default_manager",
+]

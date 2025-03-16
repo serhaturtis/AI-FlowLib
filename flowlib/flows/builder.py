@@ -1,230 +1,144 @@
-"""Flow builder for creating and composing flows.
+"""Flow builder implementation for programmatic flow creation.
 
-This module provides a builder pattern for constructing flow pipelines.
-The builder supports:
-- Linear flow composition
-- Conditional branching
-- Output schema validation
-- Metadata attachment
+This module provides an enhanced FlowBuilder class for programmatically
+creating flows with a clean, fluent interface.
 """
 
-from typing import Dict, Any, List, Optional, Callable, Type
+from typing import Dict, List, Optional, Type, Any, Callable, Union
 from pydantic import BaseModel
 
+from ..core.models.context import Context
+from ..core.models.result import FlowResult
 from .base import Flow
 from .stage import Stage
 from .composite import CompositeFlow
-from .conditional import ConditionalFlow
-from ..core.errors.base import ValidationError, ErrorContext
+from .standalone import StandaloneStage
 
 class FlowBuilder:
-    """Builder pattern for creating and composing flows.
+    """Enhanced flow builder for programmatic flow creation.
     
-    This class provides a fluent interface for constructing flow pipelines
-    with support for linear composition, conditional branching, validation,
-    and metadata attachment.
-    
-    Example:
-        ```python
-        flow = (FlowBuilder("my_pipeline")
-                .add_stage("stage1", process_fn1)
-                .add_stage("stage2", process_fn2, 
-                          condition=lambda x: x["value"] > 0,
-                          alternative=fallback_flow)
-                .set_output_schema(OutputModel)
-                .build())
-        ```
+    This class provides:
+    1. A fluent interface for programmatically building flows
+    2. Support for multiple stages, branch conditions, and error handlers
+    3. Clean validation of inputs and outputs
     """
     
-    def __init__(self, name: str):
+    def __init__(
+        self,
+        name: str,
+        input_schema: Optional[Type[BaseModel]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ):
         """Initialize flow builder.
         
         Args:
-            name: Name of the flow pipeline
+            name: Name for the resulting flow
+            input_schema: Optional Pydantic model for input validation. Must be a Pydantic BaseModel subclass.
+            metadata: Optional metadata about the flow
+            
+        Raises:
+            ValueError: If input_schema is provided but not a Pydantic BaseModel subclass.
         """
+        # Validate input_schema is a Pydantic model if provided
+        if input_schema is not None and not (isinstance(input_schema, type) and issubclass(input_schema, BaseModel)):
+            raise ValueError(f"Flow input_schema must be a Pydantic BaseModel subclass, got {input_schema}")
+            
         self.name = name
-        self._stages: List[Flow] = []
-        self._conditions: Dict[int, Callable[[Dict[str, Any]], bool]] = {}
-        self._alternative_paths: Dict[int, Flow] = {}
-        self._output_schema: Optional[Type[BaseModel]] = None
-        self._metadata: Dict[str, Any] = {}
+        self.input_schema = input_schema
+        self.metadata = metadata or {}
+        self.stages: List[Flow] = []
+        self.output_schema: Optional[Type[BaseModel]] = None
     
     def add_stage(
         self,
-        name: str,
-        process_fn: Callable,
+        stage_or_fn: Union[Flow, Callable, StandaloneStage],
+        name: Optional[str] = None,
+        input_schema: Optional[Type[BaseModel]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
-        condition: Optional[Callable[[Dict[str, Any]], bool]] = None,
-        alternative: Optional[Flow] = None
+        metadata: Optional[Dict[str, Any]] = None
     ) -> 'FlowBuilder':
-        """Add a processing stage to the pipeline.
+        """Add a stage to the flow.
         
         Args:
-            name: Stage name
-            process_fn: Processing function (can be async)
-            output_schema: Optional output validation schema
-            condition: Optional condition for conditional execution
-            alternative: Optional alternative flow if condition fails
+            stage_or_fn: Flow instance, function, or StandaloneStage to add
+            name: Optional name for the stage (required if function provided)
+            input_schema: Optional Pydantic model for input validation. Must be a Pydantic BaseModel subclass.
+            output_schema: Optional Pydantic model for output validation. Must be a Pydantic BaseModel subclass.
+            metadata: Optional metadata about the stage
             
         Returns:
             Self for chaining
-        """
-        stage = Stage(
-            name=name,
-            process_fn=process_fn,
-            output_schema=output_schema
-        )
-        
-        stage_index = len(self._stages)
-        self._stages.append(stage)
-        
-        if condition:
-            self._conditions[stage_index] = condition
-        if alternative:
-            self._alternative_paths[stage_index] = alternative
-            
-        return self
-    
-    def set_output_schema(self, schema: Type[BaseModel]) -> 'FlowBuilder':
-        """Set output schema for final validation.
-        
-        Args:
-            schema: Pydantic model for output validation
-            
-        Returns:
-            Self for chaining
-        """
-        self._output_schema = schema
-        return self
-    
-    def add_metadata(self, **metadata: Any) -> 'FlowBuilder':
-        """Add metadata to the flow pipeline.
-        
-        Args:
-            **metadata: Key-value metadata pairs
-            
-        Returns:
-            Self for chaining
-        """
-        self._metadata.update(metadata)
-        return self
-    
-    def build(self) -> Flow:
-        """Build the flow pipeline.
-        
-        Returns:
-            Constructed flow pipeline
             
         Raises:
-            ValidationError: If pipeline configuration is invalid
+            ValueError: If input_schema or output_schema is provided but not a Pydantic BaseModel subclass.
         """
-        if not self._stages:
-            raise ValidationError(
-                "Flow pipeline must have at least one stage",
-                ErrorContext.create(flow_name=self.name)
-            )
+        # Validate input_schema and output_schema are Pydantic models if provided
+        if input_schema is not None and not (isinstance(input_schema, type) and issubclass(input_schema, BaseModel)):
+            raise ValueError(f"Stage input_schema must be a Pydantic BaseModel subclass, got {input_schema}")
         
-        # For single stage without conditions
-        if len(self._stages) == 1 and not self._conditions:
-            flow = self._stages[0]
-            if self._output_schema:
-                flow.output_schema = self._output_schema
-            flow.metadata.update(self._metadata)
-            return flow
-        
-        # Build pipeline with conditions and alternatives
-        current_flow = None
-        for i, stage in enumerate(reversed(self._stages)):
-            index = len(self._stages) - i - 1
+        if output_schema is not None and not (isinstance(output_schema, type) and issubclass(output_schema, BaseModel)):
+            raise ValueError(f"Stage output_schema must be a Pydantic BaseModel subclass, got {output_schema}")
             
-            if index in self._conditions:
-                # Create conditional flow
-                condition = self._conditions[index]
-                alternative = self._alternative_paths.get(index)
-                
-                if current_flow:
-                    # Connect to next stage
-                    flow = ConditionalFlow(
-                        name=f"{stage.name}_conditional",
-                        condition=condition,
-                        success_flow=stage,
-                        failure_flow=alternative or current_flow
-                    )
-                else:
-                    # Last stage
-                    flow = ConditionalFlow(
-                        name=f"{stage.name}_conditional",
-                        condition=condition,
-                        success_flow=stage,
-                        failure_flow=alternative or stage
-                    )
-            else:
-                # Create sequential flow
-                if current_flow:
-                    flow = CompositeFlow(
-                        name=f"{stage.name}_composite",
-                        flows=[stage, current_flow]
-                    )
-                else:
-                    flow = stage
-            
-            current_flow = flow
+        if isinstance(stage_or_fn, Flow):
+            # If it's already a Flow, just add it
+            self.stages.append(stage_or_fn)
+        elif isinstance(stage_or_fn, StandaloneStage):
+            # Convert StandaloneStage to Stage
+            self.stages.append(stage_or_fn.to_stage())
+        else:
+            # It's a function, create a Stage
+            stage_name = name or getattr(stage_or_fn, "__name__", "unnamed_stage")
+            self.stages.append(Stage(
+                name=stage_name,
+                process_fn=stage_or_fn,
+                input_schema=input_schema,
+                output_schema=output_schema,
+                metadata=metadata
+            ))
         
-        # Set output schema and metadata on final flow
-        if self._output_schema:
-            current_flow.output_schema = self._output_schema
-        current_flow.metadata.update(self._metadata)
-        
-        return current_flow
+        return self
     
-    @staticmethod
-    def linear(*stages: Flow) -> Flow:
-        """Create a simple linear pipeline from stages.
+    def with_output_schema(self, output_schema: Type[BaseModel]) -> 'FlowBuilder':
+        """Set output schema for the flow.
         
         Args:
-            *stages: Flow stages in order
+            output_schema: Pydantic model for output validation. Must be a Pydantic BaseModel subclass.
             
         Returns:
-            Composite flow of stages
+            Self for chaining
             
         Raises:
-            ValidationError: If no stages provided
+            ValueError: If output_schema is not a Pydantic BaseModel subclass.
         """
-        if not stages:
-            raise ValidationError(
-                "Linear pipeline requires at least one stage",
-                ErrorContext.create()
-            )
-        
-        if len(stages) == 1:
-            return stages[0]
+        # Validate output_schema is a Pydantic model
+        if not (isinstance(output_schema, type) and issubclass(output_schema, BaseModel)):
+            raise ValueError(f"Flow output_schema must be a Pydantic BaseModel subclass, got {output_schema}")
             
+        self.output_schema = output_schema
+        return self
+    
+    def with_metadata(self, metadata: Dict[str, Any]) -> 'FlowBuilder':
+        """Add metadata to the flow.
+        
+        Args:
+            metadata: Metadata to add
+            
+        Returns:
+            Self for chaining
+        """
+        self.metadata.update(metadata)
+        return self
+    
+    def build(self) -> CompositeFlow:
+        """Build the flow.
+        
+        Returns:
+            CompositeFlow instance with configured stages and options
+        """
         return CompositeFlow(
-            name="linear_pipeline",
-            flows=list(stages)
-        )
-    
-    @staticmethod
-    def conditional(
-        condition: Callable[[Dict[str, Any]], bool],
-        success_flow: Flow,
-        failure_flow: Optional[Flow] = None,
-        name: str = "conditional"
-    ) -> Flow:
-        """Create a simple conditional flow.
-        
-        Args:
-            condition: Condition function
-            success_flow: Flow to execute on success
-            failure_flow: Optional flow to execute on failure
-            name: Optional flow name
-            
-        Returns:
-            Conditional flow
-        """
-        return ConditionalFlow(
-            name=name,
-            condition=condition,
-            success_flow=success_flow,
-            failure_flow=failure_flow
-        )
+            name=self.name,
+            stages=self.stages,
+            input_schema=self.input_schema,
+            output_schema=self.output_schema,
+            metadata=self.metadata
+        ) 

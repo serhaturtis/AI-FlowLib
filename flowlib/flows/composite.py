@@ -1,498 +1,310 @@
-# src/flows/composite.py
+"""Composite flow implementation for multi-stage pipelines.
 
-from typing import Dict, Any, Optional, List, Type, Callable, Awaitable
+This module provides an enhanced CompositeFlow class for organizing
+multiple stages into pipelines with improved flow control, error handling,
+and result propagation.
+"""
+
+from typing import Dict, List, Optional, Type, Any, Iterable, Mapping, Sequence, Union
 from pydantic import BaseModel
-from datetime import datetime
+import logging
 
-from .base import Flow
 from ..core.models.context import Context
-from ..core.models.results import FlowResult, FlowStatus
-from ..core.errors.base import ValidationError, ExecutionError, ErrorContext
-from ..core.errors.handlers import ErrorHandler
+from ..core.models.result import FlowResult, FlowStatus
+from ..core.errors import ExecutionError, ErrorContext
+from .base import Flow
+from .stage import Stage
+from .registry import stage_registry
 
-class CompositeError(ExecutionError):
-    """Error specific to composite flow operations."""
-    pass
-
-class FlowExecutionError(CompositeError):
-    """Error during individual flow execution."""
-    
-    def __init__(
-        self,
-        message: str,
-        flow_name: str,
-        **kwargs
-    ):
-        super().__init__(message, **kwargs)
-        self.failed_flow = flow_name
-        if self.context:
-            self.context.add_metadata(failed_flow=flow_name)
+logger = logging.getLogger(__name__)
 
 class CompositeFlow(Flow):
-    """A flow that combines multiple flows into a single workflow.
+    """Enhanced composite flow for multi-stage pipelines.
     
-    This flow can operate in two modes:
-    1. Sequential mode: Flows are executed in sequence, with each flow's output available to the next
-    2. Connected mode: Flows are connected explicitly via a connection map
-    
-    In both modes, error handlers can be registered to handle specific error types.
+    This class provides:
+    1. Clean organization of multiple stages into a pipeline
+    2. Improved flow control with success/error handling
+    3. Rich metadata for debugging and monitoring
+    4. Access to individual stage results
+    5. Automatic access to registered standalone stages
     """
     
     def __init__(
         self,
         name: str,
-        flows: List[Flow],
-        connections: Optional[Dict[str, str]] = None,
-        error_handlers: Optional[Dict[str, Flow]] = None,
+        stages: Optional[List[Flow]] = None,
+        stage_names: Optional[List[str]] = None,
         input_schema: Optional[Type[BaseModel]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        auto_load_stages: bool = True,
+        **kwargs
     ):
-        """Initialize CompositeFlow.
+        """Initialize composite flow.
         
         Args:
-            name: Flow name
-            flows: List of component flows to execute
-            connections: Optional flow connection mapping. If None, flows are executed sequentially
-            error_handlers: Optional error handler mapping
-            input_schema: Optional schema for input validation
-            output_schema: Optional schema for output validation
-            metadata: Optional flow metadata
-            
-        Raises:
-            ValidationError: If flow configuration is invalid
+            name: Unique name for the composite flow
+            stages: Optional list of stages to execute
+            stage_names: Optional list of stage names to load from registry
+            input_schema: Optional Pydantic model for input validation
+            output_schema: Optional Pydantic model for output validation
+            metadata: Optional metadata about the flow
+            auto_load_stages: Whether to automatically load standalone stages from registry
+            **kwargs: Additional options passed to the base Flow
         """
         super().__init__(
-            name=name,
+            name_or_instance=name,
             input_schema=input_schema,
             output_schema=output_schema,
-            metadata=metadata
+            metadata=metadata,
+            **kwargs
         )
+        self.stages = stages or []
+        self._stage_instances = {}
         
-        if not flows:
-            raise ValidationError(
-                "CompositeFlow requires at least one flow",
-                ErrorContext.create(
-                    flow_name=name
-                )
-            )
-            
-        self.flows = flows
-        self.connections = connections
-        self.error_handlers = error_handlers or {}
-        self._flow_map = {f.name: f for f in flows}
+        # Set the flow_instance and pipeline_method attributes
+        # to ensure the Flow.execute method calls our _execute method
+        self.flow_instance = self
+        self.pipeline_method = self.run_pipeline
         
-        # Validate connections if provided
-        if connections:
-            self._validate_connections()
-            
-        # Validate output schemas
-        if output_schema:
-            self._validate_output_schemas()
+        # Load stages from registry if specified
+        if stage_names:
+            self._load_stages_from_registry(stage_names)
+        
+        # If auto_load_stages is True, load all standalone stages
+        if auto_load_stages:
+            self._load_all_standalone_stages()
+        
+        # Update metadata with stage info
+        self._update_metadata()
     
-    def _validate_connections(self) -> None:
-        """Validate flow connections.
-        
-        Raises:
-            ValidationError: If connections are invalid
-        """
-        flow_names = set(self._flow_map.keys())
-        
-        for source, target in self.connections.items():
-            if source not in flow_names:
-                raise ValidationError(
-                    f"Unknown source flow: {source}",
-                    ErrorContext.create(
-                        flow_name=self.name,
-                        available_flows=list(flow_names)
-                    )
-                )
-            if target not in flow_names:
-                raise ValidationError(
-                    f"Unknown target flow: {target}",
-                    ErrorContext.create(
-                        flow_name=self.name,
-                        available_flows=list(flow_names)
-                    )
-                )
-    
-    def _validate_output_schemas(self) -> None:
-        """
-        Validate that flow output schemas are compatible with composite output schema.
-        
-        This ensures that flow outputs can be properly structured into the expected format.
-        Handles both direct schema matches and nested composite flows.
-        
-        Raises:
-            ValidationError: If schemas are incompatible
-        """
-        if not self.output_schema:
-            return
-            
-        output_fields = self.output_schema.model_fields
-        
-        # Check each flow's output schema
-        for flow in self.flows:
-            if not flow.output_schema:
-                continue
-                
-            # Case 1: Direct schema match
-            if flow.output_schema == self.output_schema:
-                continue
-                
-            # Case 2: Flow output schema matches a field in our output schema
-            field_match = False
-            for field_name, field_info in output_fields.items():
-                if (isinstance(field_info.annotation, type) and 
-                    issubclass(flow.output_schema, field_info.annotation)):
-                    field_match = True
-                    break
-            
-            if field_match:
-                continue
-                
-            # Case 3: Flow is composite and its fields match our schema fields
-            if isinstance(flow, CompositeFlow) and flow.output_schema:
-                flow_fields = flow.output_schema.model_fields
-                fields_match = True
-                
-                # Check if all required fields in our schema can be filled by the flow
-                for field_name, field_info in output_fields.items():
-                    if not field_info.is_required:
-                        continue
-                        
-                    field_match = False
-                    if field_name in flow_fields:
-                        field_match = True
-                    
-                    if not field_match:
-                        fields_match = False
-                        break
-                
-                if fields_match:
-                    continue
-            
-            # If we get here, schemas are not compatible
-            raise ValidationError(
-                f"Flow '{flow.name}' output schema is not compatible with composite output schema",
-                ErrorContext.create(
-                    flow_name=self.name,
-                    flow_schema=flow.output_schema.model_json_schema(),
-                    output_schema=self.output_schema.model_json_schema(),
-                    flow_type=type(flow).__name__
-                )
-            )
-    
-    def _structure_results(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Structure flow results according to output schema.
+    def _load_stages_from_registry(self, stage_names: List[str]) -> None:
+        """Load specified stages from the registry.
         
         Args:
-            results: Dictionary of flow results
+            stage_names: List of stage names to load
+        """
+        for stage_name in stage_names:
+            try:
+                stage_info = stage_registry.get_stage(stage_name)
+                if stage_info.get('is_standalone', False):
+                    stage = Stage(
+                        name=stage_name,
+                        process_fn=stage_info.get('func'),
+                        input_schema=stage_info.get('input_model'),
+                        output_schema=stage_info.get('output_model'),
+                        metadata=stage_info.get('metadata', {})
+                    )
+                    self.stages.append(stage)
+                    self._stage_instances[stage_name] = stage
+                else:
+                    logger.warning(f"Stage '{stage_name}' is not a standalone stage and cannot be loaded directly")
+            except KeyError:
+                logger.warning(f"Stage '{stage_name}' not found in registry")
+    
+    def _load_all_standalone_stages(self) -> None:
+        """Load all standalone stages from the registry."""
+        standalone_stage_names = stage_registry.get_stages()
+        self._load_stages_from_registry(standalone_stage_names)
+    
+    def _update_metadata(self) -> None:
+        """Update metadata with stage information."""
+        stage_info = []
+        for stage in self.stages:
+            stage_info.append({
+                "name": stage.name,
+                "type": stage.__class__.__name__
+            })
+        
+        self.metadata["stages"] = stage_info
+        self.metadata["stage_count"] = len(self.stages)
+    
+    def add_stage(self, stage: Flow) -> 'CompositeFlow':
+        """Add a stage to the composite flow.
+        
+        Args:
+            stage: Flow instance to add as a stage
             
         Returns:
-            Structured data matching output schema
+            Self for chaining
+        """
+        self.stages.append(stage)
+        self._stage_instances[stage.name] = stage
+        self._update_metadata()
+        return self
+    
+    def add_stages(self, stages: Iterable[Flow]) -> 'CompositeFlow':
+        """Add multiple stages to the composite flow.
+        
+        Args:
+            stages: Iterable of Flow instances to add as stages
+            
+        Returns:
+            Self for chaining
+        """
+        for stage in stages:
+            self.stages.append(stage)
+            self._stage_instances[stage.name] = stage
+        self._update_metadata()
+        return self
+    
+    def get_stage(self, stage_name: str, required: bool = True) -> Optional[Flow]:
+        """Get a stage by name.
+        
+        Args:
+            stage_name: Name of the stage to retrieve
+            required: If True, raise an error when stage not found
+            
+        Returns:
+            Stage instance or None if not found and required=False
             
         Raises:
-            ValidationError: If results cannot be structured properly
+            ValueError: If stage not found and required=True
         """
-        if not self.output_schema:
-            return results
-            
-        output_fields = self.output_schema.model_fields
-        structured = {}
+        # Check if the stage is already loaded
+        if stage_name in self._stage_instances:
+            return self._stage_instances[stage_name]
         
-        # Case 1: Single flow produced complete output
-        for flow_name, flow_data in results.items():
-            flow = self._flow_map[flow_name]
-            if flow.output_schema == self.output_schema:
-                try:
-                    return self.output_schema(**flow_data).model_dump()
-                except Exception:
-                    # If validation fails, try other structuring methods
-                    pass
-        
-        # Case 2: Multiple flows contribute to different fields
-        for flow_name, flow_data in results.items():
-            flow = self._flow_map[flow_name]
-            if not flow.output_schema:
-                continue
-                
-            # Handle composite flow results
-            if isinstance(flow, CompositeFlow):
-                for field_name, field_info in output_fields.items():
-                    if field_name in flow_data:
-                        structured[field_name] = flow_data[field_name]
-                continue
-            
-            # Handle individual flow results
-            for field_name, field_info in output_fields.items():
-                if (isinstance(field_info.annotation, type) and 
-                    issubclass(flow.output_schema, field_info.annotation)):
-                    structured[field_name] = flow_data
-                    break
-        
-        # Add default values for optional fields
-        for field_name, field_info in output_fields.items():
-            if field_name not in structured and field_info.default is not None:
-                structured[field_name] = field_info.default
-        
-        # Validate final structure
+        # Try to load the stage from the registry if it's a standalone stage
         try:
-            return self.output_schema(**structured).model_dump()
-        except Exception as e:
-            raise ValidationError(
-                "Failed to create valid output structure",
-                ErrorContext.create(
-                    flow_name=self.name,
-                    error=str(e),
-                    structured_data=structured,
-                    required_fields=[
-                        name for name, field in output_fields.items() 
-                        if field.is_required
-                    ]
+            stage_info = stage_registry.get_stage(stage_name)
+            if stage_info.is_standalone:
+                stage = Stage(
+                    name=stage_name,
+                    process_fn=stage_info.standalone_func,
+                    input_schema=stage_info.input_model,
+                    output_schema=stage_info.output_model,
+                    metadata=stage_info.metadata
                 )
-            )
+                self.stages.append(stage)
+                self._stage_instances[stage_name] = stage
+                self._update_metadata()
+                return stage
+        except KeyError:
+            pass
+        
+        if required:
+            raise ValueError(f"Stage '{stage_name}' not found in flow {self.name}")
+        return None
     
     async def _execute(self, context: Context) -> FlowResult:
-        """Execute composite flow logic.
-        
-        In sequential mode, flows are executed in order with results passed forward.
-        In connected mode, flows are executed according to the connection map.
+        """Execute all stages in sequence.
         
         Args:
-            context: Execution context containing input data and metadata
-            
-        Returns:
-            FlowResult containing execution results and metadata
-            
-        Raises:
-            ExecutionError: If flow execution fails
-            ValidationError: If input validation fails
-        """
-        results = {}
-        executed_flows = []
-        current_context = context.copy()
-        start_time = datetime.now()
-        
-        try:
-            if self.connections:
-                # Connected mode execution
-                current_flow = self.flows[0]
-                while current_flow:
-                    result = await self._execute_flow(current_flow, current_context)
-                    results[current_flow.name] = result.data
-                    executed_flows.append(current_flow.name)
-                    
-                    # Update context for next flow
-                    current_context.data.update(results)
-                    
-                    # Get next flow from connections
-                    next_name = self.connections.get(current_flow.name)
-                    current_flow = self._flow_map.get(next_name)
-            else:
-                # Sequential mode execution
-                for flow in self.flows:
-                    result = await self._execute_flow(flow, current_context)
-                    results[flow.name] = result.data
-                    executed_flows.append(flow.name)
-                    
-                    # Update context for next flow
-                    current_context.data.update(results)
-            
-            # Structure and validate final output
-            try:
-                output_data = self._structure_results(results)
-            except ValidationError as e:
-                return FlowResult(
-                    flow_name=self.name,
-                    status=FlowStatus.ERROR,
-                    data=results,  # Include raw results
-                    error="Failed to structure flow results",
-                    error_details={
-                        "error": str(e),
-                        "flow_results": results
-                    },
-                    metadata={
-                        "executed_flows": executed_flows,
-                        "duration": (datetime.now() - start_time).total_seconds()
-                    }
-                )
-            
-            return FlowResult(
-                flow_name=self.name,
-                status=FlowStatus.SUCCESS,
-                data=output_data,
-                metadata={
-                    "executed_flows": executed_flows,
-                    "flow_count": len(executed_flows),
-                    "duration": (datetime.now() - start_time).total_seconds()
-                }
-            )
-            
-        except Exception as e:
-            if not isinstance(e, (ValidationError, ExecutionError)):
-                e = ExecutionError(
-                    message=f"Composite flow execution failed: {str(e)}",
-                    context=ErrorContext.create(
-                        flow_name=self.name,
-                        executed_flows=executed_flows,
-                        current_flow=current_flow.name if 'current_flow' in locals() else None
-                    )
-                )
-            
-            # Try error handler if available
-            error_type = type(e).__name__
-            if error_type in self.error_handlers:
-                handler = self.error_handlers[error_type]
-                try:
-                    error_context = current_context.copy()
-                    error_context.data["error"] = str(e)
-                    return await handler._execute(error_context)
-                except Exception as handler_error:
-                    # If handler fails, raise original error
-                    raise e
-            raise e
-    
-    async def _execute_flow(self, flow: Flow, context: Context) -> FlowResult:
-        """Execute a single flow with error handling.
-        
-        Args:
-            flow: Flow to execute
-            context: Current execution context
-            
-        Returns:
-            Flow execution result
-            
-        Raises:
-            ExecutionError: If flow execution fails
-        """
-        try:
-            return await flow._execute(context)
-        except Exception as e:
-            if not isinstance(e, (ValidationError, ExecutionError)):
-                e = ExecutionError(
-                    message=f"Flow execution failed: {str(e)}",
-                    context=ErrorContext.create(
-                        flow_name=flow.name,
-                        parent_flow=self.name
-                    )
-                )
-            raise e
-    
-    def cleanup(self) -> None:
-        """Clean up resources used by all flows."""
-        for flow in self.flows:
-            flow.cleanup()
-        for handler in self.error_handlers.values():
-            handler.cleanup()
-    
-    def __str__(self) -> str:
-        """String representation showing flow structure."""
-        if self.connections:
-            structure = [f"{f.name} -> {self.connections.get(f.name, 'END')}" for f in self.flows]
-        else:
-            structure = [f.name for f in self.flows]
-        return f"CompositeFlow(name='{self.name}', structure=[{' -> '.join(structure)}])"
-
-    def create_processor(self) -> Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]:
-        """Create a processor function that can be used as a stage process_fn.
-        
-        This creates a standardized wrapper that handles:
-        1. Context creation from input data
-        2. Flow execution
-        3. Error status handling
-        4. Result data extraction
-        
-        Returns:
-            Async callable that processes input data and returns output data
-        """
-        async def processor(data: Dict[str, Any]) -> Dict[str, Any]:
-            context = Context(data=data)
-            result = await self._execute(context)
-            if result.status != FlowStatus.SUCCESS:
-                raise ExecutionError(
-                    f"Composite flow execution failed: {self.name}",
-                    ErrorContext.create(
-                        flow_name=self.name,
-                        error=result.error,
-                        metadata=result.metadata
-                    )
-                )
-            return result.data
-        
-        return processor
-
-class CompositeErrorHandler(ErrorHandler):
-    """Handles errors in composite flows."""
-    
-    def __init__(self, error_handlers: Dict[str, Flow]):
-        self.error_handlers = error_handlers
-
-    async def handle(
-        self,
-        error: ExecutionError,
-        context: Dict[str, Any]
-    ) -> Optional[FlowResult]:
-        """
-        Handle flow execution error.
-        
-        Args:
-            error: Error to handle
             context: Execution context
             
         Returns:
-            Handler result if successful, None otherwise
+            FlowResult containing execution outcome
+            
+        Raises:
+            ExecutionError: If execution fails
         """
-        if not isinstance(error, FlowExecutionError):
-            return None
-            
-        # Find appropriate error handler
-        handler = None
-        error_type = type(error.cause).__name__
+        if not self.stages:
+            logger.warning(f"CompositeFlow '{self.name}' has no stages to execute")
+            return FlowResult(
+                data={},
+                flow_name=self.name,
+                status=FlowStatus.SUCCESS,
+                metadata={"message": "No stages to execute"}
+            )
         
-        if error_type in self.error_handlers:
-            handler = self.error_handlers[error_type]
-        elif "default" in self.error_handlers:
-            handler = self.error_handlers["default"]
-            
-        if not handler:
-            return None
-            
+        # Track individual stage results
+        stage_results: Dict[str, Any] = {}
+        final_result = {}
+        
         try:
-            # Execute error handler
-            error_context = Context(data=context)
-            error_context.set("error", str(error), temporary=True)
-            error_context.set("error_flow", error.failed_flow, temporary=True)
+            # Create a new Context with the input data
+            # This ensures we have a proper Context object with all needed methods
+            input_data = context.data
+            current_context = Context(data={"input": input_data})
             
-            result = await handler._execute(error_context)
+            # Execute each stage in sequence
+            for i, stage in enumerate(self.stages):
+                logger.debug(f"Executing stage {i+1}/{len(self.stages)}: {stage.name}")
+                
+                # Execute the stage
+                result = await stage.execute(current_context)
+                
+                # Store the stage result
+                stage_results[stage.name] = result
+                
+                if result.status == FlowStatus.ERROR:
+                    logger.error(f"Stage {stage.name} failed: {result.error}")
+                    # Create error result with stage results metadata
+                    return FlowResult(
+                        data={},
+                        flow_name=self.name,
+                        status=FlowStatus.ERROR,
+                        error=f"Stage '{stage.name}' failed: {result.error}",
+                        error_details=result.error_details,
+                        metadata={"stage_results": stage_results}
+                    )
+                
+                # Store the stage result in the context
+                # Use the stage name as the key
+                current_context.set(stage.name, result.data)
+                
+                # If this is the last stage, use its result data as the final result
+                if i == len(self.stages) - 1:
+                    final_result = result.data
             
-            # Add error handling metadata
-            result.metadata.update({
-                "handled_error": str(error),
-                "handler_flow": handler.name,
-                "original_flow": error.failed_flow
-            })
-            
-            return result
+            # Create success result with stage results metadata
+            return FlowResult(
+                data=final_result,
+                flow_name=self.name,
+                status=FlowStatus.SUCCESS,
+                metadata={"stage_results": stage_results}
+            )
             
         except Exception as e:
-            # Chain error handler failure
-            if not isinstance(e, ExecutionError):
-                e = CompositeError(
-                    message=f"Error handler failed: {str(e)}",
-                    context=error.context.add_metadata(
-                        handler_flow=handler.name
-                    ),
-                    cause=e
-                )
-            error.chain(e)
-            return None
-
+            error_context = ErrorContext.create(
+                flow_name=self.name,
+                stage_results=stage_results
+            )
+            
+            raise ExecutionError(
+                message=f"Composite flow execution failed: {str(e)}",
+                context=error_context,
+                cause=e
+            )
+    
     def __str__(self) -> str:
         """String representation."""
-        return (
-            f"CompositeFlow(name='{self.name}', "
-            f"flows={len(self.flows)}, "
-            f"connections={len(self.connections)})"
-        )
+        return f"CompositeFlow(name='{self.name}', stages={len(self.stages)})"
+
+    def get_stages(self) -> List[str]:
+        """Get all available stages for this flow.
+        
+        Returns:
+            List of stage names
+        """
+        # Return stages already instantiated
+        stages = list(self._stage_instances.keys())
+        
+        # Include any stages in the stages list that aren't in _stage_instances
+        for stage in self.stages:
+            if stage.name not in stages:
+                stages.append(stage.name)
+        
+        # Add standalone stages from registry
+        standalone_stages = stage_registry.get_stages()
+        for stage_name in standalone_stages:
+            if stage_name not in stages:
+                stages.append(stage_name)
+                
+        return stages
+
+    # Add a pipeline method that will be recognized by the Flow.execute method
+    async def run_pipeline(self, context: Context) -> Any:
+        """Execute the composite flow pipeline.
+        
+        This pipeline method coordinates the execution of all stages in sequence.
+        It delegates to the _execute method for the actual implementation.
+        
+        Args:
+            context: Execution context
+            
+        Returns:
+            Flow execution result
+        """
+        return await self._execute(context) 

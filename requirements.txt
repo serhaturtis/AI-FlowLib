@@ -1,4 +1,9 @@
-llama-cpp-python>=0.2.0
+# Core dependencies
 pydantic>=2.0.0
-torch>=2.0.0  # Optional: for GPU detection
-numpy>=1.20.0 
+pydantic-settings>=2.0.0
+
+# Local LLM dependencies
+llama-cpp-python>=0.2.0
+
+# Async utilities
+aiohttp>=3.8.0 

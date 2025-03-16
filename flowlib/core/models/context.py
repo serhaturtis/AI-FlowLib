@@ -1,318 +1,209 @@
-# src/core/context.py
+"""Enhanced context model with attribute-based access and improved state management.
 
-from datetime import datetime
-from typing import Dict, Any, Optional, List
-from uuid import uuid4
+This module provides a Context class for managing execution state with 
+attribute-based access, snapshot capabilities, and clean validation.
+"""
+
 from copy import deepcopy
+from typing import Any, Dict, List, Optional, TypeVar, Generic, Type, cast
+from pydantic import BaseModel, Field
 
-class ContextState:
-    """Snapshot of context state."""
+T = TypeVar('T', bound=BaseModel)
+
+class Context(Generic[T]):
+    """Enhanced execution context with improved state management.
     
-    def __init__(
-        self,
-        data: Dict[str, Any],
-        metadata: Dict[str, Any],
-        timestamp: datetime
-    ):
-        """
-        Initialize context state.
-        
-        Args:
-            data: Context data
-            metadata: Context metadata
-            timestamp: State timestamp
-        """
-        self.data = deepcopy(data)
-        self.metadata = deepcopy(metadata)
-        self.timestamp = timestamp
-
-    def restore(self, context: 'Context') -> None:
-        """
-        Restore this state to a context.
-        
-        Args:
-            context: Context to restore to
-        """
-        context.data = deepcopy(self.data)
-        context.metadata = deepcopy(self.metadata)
-
-class Context:
-    """
-    Manages data and state during flow execution.
-    Provides hierarchical state management and history tracking.
+    This class provides:
+    1. Attribute-based access to context data
+    2. Clean state management with snapshots and rollbacks
+    3. Type-safe validation of data
+    4. Deep copying for isolation
     """
     
     def __init__(
         self,
         data: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        parent: Optional['Context'] = None,
-        copy_history: bool = False
+        model_type: Optional[Type[T]] = None
     ):
-        """
-        Initialize context.
+        """Initialize context.
         
         Args:
             data: Initial data dictionary
-            metadata: Initial metadata dictionary
-            parent: Optional parent context
-            copy_history: Whether to copy history when creating new context
+            model_type: Optional Pydantic model type for validation
         """
-        self.id = str(uuid4())
-        self.data = data or {}
-        self.metadata = metadata or {}
-        self.parent = parent
-        self._history: List[ContextState] = []
-        self._temp_data: Dict[str, Any] = {}
-        self.created_at = datetime.now()
-        self.last_modified = self.created_at
-
-    def copy(self, deep: bool = True, copy_history: bool = False) -> 'Context':
-        """
-        Create a copy of this context.
+        self._data = data or {}
+        self._model_type = model_type
+        self._snapshots: List[Dict[str, Any]] = []
+        
+        # Validate initial data if model type is provided
+        if model_type and data:
+            self._validate(data)
+    
+    @property
+    def data(self) -> Dict[str, Any]:
+        """Get the data dictionary."""
+        return self._data
+    
+    def __getattr__(self, name: str) -> Any:
+        """Enable attribute-based access to context data.
         
         Args:
-            deep: Whether to perform a deep copy of data
-            copy_history: Whether to copy execution history
+            name: Attribute name to access
             
         Returns:
-            New context instance with copied data
-        """
-        if deep:
-            data = deepcopy(self.data)
-            metadata = deepcopy(self.metadata)
-            temp_data = deepcopy(self._temp_data)
-        else:
-            data = dict(self.data)
-            metadata = dict(self.metadata)
-            temp_data = dict(self._temp_data)
+            Attribute value
             
-        # Create new context with copied data
-        new_context = Context(
-            data=data,
-            metadata=metadata,
-            parent=self.parent,  # Maintain same parent relationship
-            copy_history=copy_history
-        )
-        
-        # Copy temporary data
-        new_context._temp_data = temp_data
-        
-        # Copy history if requested
-        if copy_history:
-            new_context._history = [
-                ContextState(
-                    data=deepcopy(state.data) if deep else dict(state.data),
-                    metadata=deepcopy(state.metadata) if deep else dict(state.metadata),
-                    timestamp=state.timestamp
-                )
-                for state in self._history
-            ]
-        
-        # Copy timestamps
-        new_context.created_at = self.created_at
-        new_context.last_modified = self.last_modified
-        
-        return new_context
-
-    def get(
-        self,
-        key: str,
-        default: Any = None,
-        include_parent: bool = True
-    ) -> Any:
+        Raises:
+            AttributeError: If attribute not found
         """
-        Get value from context.
+        if name in self._data:
+            return self._data[name]
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a value from context data.
         
         Args:
-            key: Data key
+            key: Key to look up
             default: Default value if key not found
-            include_parent: Whether to check parent context
             
         Returns:
-            Value if found, default otherwise
+            Value associated with key or default
         """
-        # Check local data
-        if key in self.data:
-            return self.data[key]
-            
-        # Check temp data
-        if key in self._temp_data:
-            return self._temp_data[key]
-            
-        # Check parent if allowed
-        if include_parent and self.parent is not None:
-            return self.parent.get(key, default)
-            
-        return default
-
-    def set(
-        self,
-        key: str,
-        value: Any,
-        temporary: bool = False
-    ) -> None:
-        """
-        Set value in context.
+        return self._data.get(key, default)
+    
+    def set(self, key: str, value: Any) -> 'Context':
+        """Set a value in context data.
         
         Args:
-            key: Data key
-            value: Value to store
-            temporary: Whether to store in temporary storage
-        """
-        self._save_state()
-        
-        if temporary:
-            self._temp_data[key] = value
-        else:
-            self.data[key] = value
-            
-        self.last_modified = datetime.now()
-
-    def update(
-        self,
-        data: Dict[str, Any],
-        temporary: bool = False
-    ) -> None:
-        """
-        Update multiple values.
-        
-        Args:
-            data: Dictionary of updates
-            temporary: Whether to store in temporary storage
-        """
-        self._save_state()
-        
-        if temporary:
-            self._temp_data.update(data)
-        else:
-            self.data.update(data)
-            
-        self.last_modified = datetime.now()
-
-    def delete(
-        self,
-        key: str,
-        include_temp: bool = True
-    ) -> None:
-        """
-        Delete value from context.
-        
-        Args:
-            key: Key to delete
-            include_temp: Whether to check temporary storage
-        """
-        self._save_state()
-        
-        if key in self.data:
-            del self.data[key]
-            
-        if include_temp and key in self._temp_data:
-            del self._temp_data[key]
-            
-        self.last_modified = datetime.now()
-
-    def _save_state(self) -> None:
-        """Save current state to history."""
-        self._history.append(
-            ContextState(
-                data=self.data,
-                metadata=self.metadata,
-                timestamp=datetime.now()
-            )
-        )
-
-    def rollback(self) -> None:
-        """Rollback to previous state."""
-        if self._history:
-            previous_state = self._history.pop()
-            previous_state.restore(self)
-            self.last_modified = datetime.now()
-
-    def create_child(
-        self,
-        data: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> 'Context':
-        """
-        Create a new context inheriting from this one.
-        
-        Args:
-            data: Optional initial data
-            metadata: Optional initial metadata
+            key: Key to set
+            value: Value to associate with key
             
         Returns:
-            New child context
+            Self for chaining
+        """
+        self._data[key] = value
+        return self
+    
+    def update(self, data: Dict[str, Any]) -> 'Context':
+        """Update context data with dictionary.
+        
+        Args:
+            data: Dictionary of values to update
+            
+        Returns:
+            Self for chaining
+        """
+        if self._model_type:
+            # Validate update if model type is provided
+            self._validate(data)
+        self._data.update(data)
+        return self
+    
+    def _validate(self, data: Dict[str, Any]) -> None:
+        """Validate data against model type.
+        
+        Args:
+            data: Data to validate
+            
+        Raises:
+            ValueError: If validation fails
+        """
+        if not self._model_type:
+            return
+            
+        try:
+            # Only validate the fields that are being updated
+            # Create a partial model with just the fields in data
+            field_values = {}
+            for key, value in data.items():
+                if key in self._model_type.__annotations__:
+                    field_values[key] = value
+            
+            if field_values:
+                # Validate the partial model
+                self._model_type(**field_values)
+        except Exception as e:
+            raise ValueError(f"Context data validation failed: {str(e)}")
+    
+    def create_snapshot(self) -> int:
+        """Create a snapshot of current state.
+        
+        Returns:
+            Snapshot ID
+        """
+        self._snapshots.append(deepcopy(self._data))
+        return len(self._snapshots) - 1
+    
+    def rollback(self, snapshot_id: Optional[int] = None) -> 'Context':
+        """Rollback to a previous snapshot.
+        
+        Args:
+            snapshot_id: Optional snapshot ID (defaults to last snapshot)
+            
+        Returns:
+            Self for chaining
+            
+        Raises:
+            ValueError: If snapshot ID is invalid
+        """
+        if not self._snapshots:
+            raise ValueError("No snapshots available for rollback")
+        
+        if snapshot_id is None:
+            # Default to last snapshot
+            snapshot_id = len(self._snapshots) - 1
+        
+        if snapshot_id < 0 or snapshot_id >= len(self._snapshots):
+            raise ValueError(f"Invalid snapshot ID: {snapshot_id}")
+        
+        # Restore data from snapshot
+        self._data = deepcopy(self._snapshots[snapshot_id])
+        
+        # Remove this and any later snapshots
+        self._snapshots = self._snapshots[:snapshot_id]
+        
+        return self
+    
+    def clear_snapshots(self) -> 'Context':
+        """Clear all snapshots.
+        
+        Returns:
+            Self for chaining
+        """
+        self._snapshots = []
+        return self
+    
+    def copy(self) -> 'Context':
+        """Create a deep copy of the context.
+        
+        Returns:
+            New Context instance with copied data
         """
         return Context(
-            data=data,
-            metadata={
-                **(metadata or {}),
-                "parent_context_id": self.id
-            },
-            parent=self
+            data=deepcopy(self._data),
+            model_type=self._model_type
         )
-
-    def merge(self, other: 'Context') -> None:
-        """
-        Merge another context into this one.
+    
+    def as_model(self) -> Optional[T]:
+        """Convert context data to model instance.
         
-        Args:
-            other: Context to merge
-        """
-        self._save_state()
-        self.data.update(other.data)
-        self.metadata.update(other.metadata)
-        self._temp_data.update(other._temp_data)
-        self.last_modified = datetime.now()
-
-    def clear_temp(self) -> None:
-        """Clear temporary storage."""
-        self._temp_data.clear()
-
-    def get_history(self) -> List[ContextState]:
-        """Get state history."""
-        return self._history.copy()
-
-    def contains(
-        self,
-        key: str,
-        include_parent: bool = True,
-        include_temp: bool = True
-    ) -> bool:
-        """
-        Check if key exists in context.
-        
-        Args:
-            key: Key to check
-            include_parent: Whether to check parent context
-            include_temp: Whether to check temporary storage
-            
         Returns:
-            True if key exists, False otherwise
+            Model instance or None if no model type
         """
-        if key in self.data:
-            return True
-            
-        if include_temp and key in self._temp_data:
-            return True
-            
-        if include_parent and self.parent is not None:
-            return self.parent.contains(key)
-            
-        return False
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert context to dictionary."""
-        return {
-            "id": self.id,
-            "data": deepcopy(self.data),
-            "metadata": deepcopy(self.metadata),
-            "temp_data": deepcopy(self._temp_data),
-            "created_at": self.created_at.isoformat(),
-            "last_modified": self.last_modified.isoformat()
-        }
-
+        if not self._model_type:
+            return None
+        
+        try:
+            return cast(T, self._model_type(**self._data))
+        except Exception as e:
+            raise ValueError(f"Failed to convert context to {self._model_type.__name__}: {str(e)}")
+    
     def __str__(self) -> str:
         """String representation."""
-        return f"Context(id={self.id}, keys={list(self.data.keys())})"
+        model_name = self._model_type.__name__ if self._model_type else "None"
+        return f"Context(model_type={model_name}, data_keys={list(self._data.keys())}, snapshots={len(self._snapshots)})"
+    
+    def __contains__(self, key: str) -> bool:
+        """Check if key exists in context data."""
+        return key in self._data 
