@@ -204,7 +204,7 @@ async def classify_text(context: fl.Context) -> ClassificationResult:
         formatted_prompt,
         ClassificationResult,
         "text-analysis-model",
-        temperature=0.3
+        **classification_prompt.config
     )
     
     logger.info(f"Text classified as '{result.category}' with confidence {result.confidence:.2f}")
@@ -265,7 +265,7 @@ async def enhance_text(context: fl.Context) -> EnhancedTextResult:
             formatted_prompt,
             EnhancedTextResult,
             "text-analysis-model",
-            temperature=0.4  # Slightly higher temperature for creativity
+            **enhancement_prompt.config
         )
         
         # If the result doesn't include original_text, add it
@@ -466,7 +466,7 @@ async def aggregate_results(context: fl.Context) -> CompleteTextAnalysis:
 @fl.model("text-analysis-model")
 class LLMModelConfig:
     """Configuration for the text analysis LLM."""
-    path = "/path/to/model"
+    path = "/path/to/model.gguf"
     model_type = "phi4"
     n_ctx = 4096
     n_threads = 4
@@ -622,7 +622,7 @@ class SimpleEnhancementFlow:
                 formatted_prompt,
                 ClassificationResult,
                 "text-analysis-model",
-                temperature=0.3
+                **classification_prompt.config
             )
             
             logger.info(f"Text classified as '{result.category}' with confidence {result.confidence:.2f}")

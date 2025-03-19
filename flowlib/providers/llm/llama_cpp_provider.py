@@ -60,12 +60,15 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
             settings: Provider settings
             **kwargs: Additional settings as keyword arguments
         """
+        # Create settings first to avoid issues with _default_settings() method
+        settings = settings or LlamaCppSettings()
+        
         # Initialize parent with provider_type="llm"
         super().__init__(name=name, settings=settings)
         
-        # Initialize internal state
+        # Store settings for local use
         self._models = {}
-        self._settings = settings or LlamaCppSettings()
+        self._settings = settings
         
         # Update settings with any provided kwargs
         if kwargs:
@@ -273,6 +276,15 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
             # Format the prompt according to model type
             formatted_prompt = self._format_prompt(prompt, model_type)
             
+            # DEBUG: Print the formatted prompt after model-specific formatting
+            print("\n===== MODEL-FORMATTED PROMPT (TO BE SENT TO LLM) =====")
+            # Print a shortened version to avoid overwhelming the console
+            if len(formatted_prompt) > 2000:
+                print(formatted_prompt[:1000] + "\n[...]\n" + formatted_prompt[-1000:])
+            else:
+                print(formatted_prompt)
+            print("===== END MODEL-FORMATTED PROMPT =====\n")
+            
             # Get generation parameters with defaults
             max_tokens = kwargs.get("max_tokens", getattr(model_config, "max_tokens", 1024))
             temperature = kwargs.get("temperature", getattr(model_config, "temperature", 0.2))
@@ -344,14 +356,21 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
             
             # Parse and validate response
             try:
+                # Debug prints for JSON parsing
+                print("\n===== PARSING LLM RESPONSE =====")
+                print(f"Raw generated text (first 300 chars):\n{generated_text[:300]}")
+                
                 # Extract JSON from the text if necessary
                 if not generated_text.strip().startswith('{') and not generated_text.strip().startswith('['):
                     # Try to extract JSON from the text
                     import re
+                    print("Text doesn't start with { or [ - attempting to extract JSON with regex")
                     json_match = re.search(r'(\{.*\}|\[.*\])', generated_text, re.DOTALL)
                     if json_match:
                         json_str = json_match.group(0)
+                        print(f"JSON extracted with regex (first 300 chars):\n{json_str[:300]}")
                     else:
+                        print("Failed to extract JSON with regex")
                         raise ProviderError(
                             message="Failed to extract JSON from response",
                             provider_name=self.name,
@@ -361,12 +380,34 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
                         )
                 else:
                     json_str = generated_text
+                    print("Text appears to be JSON format already")
                 
                 # Parse JSON with lenient decoder
-                decoder = json.JSONDecoder(strict=False)
-                parsed_response = decoder.decode(json_str)
+                print("Attempting to parse JSON with lenient decoder")
+                try:
+                    decoder = json.JSONDecoder(strict=False)
+                    parsed_response = decoder.decode(json_str)
+                    print("JSON parsing successful")
+                    print(f"Parsed response type: {type(parsed_response)}")
+                    if isinstance(parsed_response, dict):
+                        print(f"Keys in parsed response: {list(parsed_response.keys())}")
+                except json.JSONDecodeError as json_err:
+                    print(f"JSON decode error: {str(json_err)}")
+                    print(f"Error position: {json_err.pos}")
+                    print(f"Error line/col: Line {json_err.lineno}, Column {json_err.colno}")
+                    print(f"Document context: {json_str[max(0, json_err.pos-50):json_err.pos+50]}")
+                    raise ProviderError(
+                        message=f"Failed to parse JSON response: {str(json_err)}",
+                        provider_name=self.name,
+                        context=ErrorContext.create(
+                            response_text=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text,
+                            error=str(json_err)
+                        ),
+                        cause=json_err
+                    )
                 
                 # Sanitize strings in the parsed data
+                print("Sanitizing strings in parsed data")
                 def sanitize_strings(obj):
                     if isinstance(obj, str):
                         return obj.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
@@ -379,35 +420,51 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
                 sanitized_data = sanitize_strings(parsed_response)
                 
                 # Validate with response model
-                if hasattr(output_type, "model_validate"):
-                    # Pydantic v2
-                    return output_type.model_validate(sanitized_data)
-                else:
-                    # Pydantic v1
-                    return output_type.parse_obj(sanitized_data)
+                print(f"Validating against model: {output_type.__name__}")
+                try:
+                    if hasattr(output_type, "model_validate"):
+                        # Pydantic v2
+                        print("Using Pydantic v2 model_validate")
+                        result = output_type.model_validate(sanitized_data)
+                    else:
+                        # Pydantic v1
+                        print("Using Pydantic v1 parse_obj")
+                        result = output_type.parse_obj(sanitized_data)
                     
-            except json.JSONDecodeError as e:
-                raise ProviderError(
-                    message=f"Failed to parse JSON response: {str(e)}",
-                    provider_name=self.name,
-                    context=ErrorContext.create(
-                        response_text=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text,
-                        error=str(e)
-                    ),
-                    cause=e
-                )
-                
+                    print("Model validation successful")
+                    print("===== PARSING COMPLETE =====\n")
+                    return result
+                    
+                except Exception as validation_err:
+                    print(f"Validation error: {str(validation_err)}")
+                    if hasattr(validation_err, '__cause__') and validation_err.__cause__:
+                        print(f"Cause: {validation_err.__cause__}")
+                    raise ProviderError(
+                        message=f"Failed to validate response: {str(validation_err)}",
+                        provider_name=self.name,
+                        context=ErrorContext.create(
+                            error=str(validation_err),
+                            error_type=type(validation_err).__name__,
+                            response=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
+                        ),
+                        cause=validation_err
+                    )
+                    
             except Exception as e:
-                raise ProviderError(
-                    message=f"Failed to validate response: {str(e)}",
-                    provider_name=self.name,
-                    context=ErrorContext.create(
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        response=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
-                    ),
-                    cause=e
-                )
+                if not isinstance(e, ProviderError):
+                    raise ProviderError(
+                        message=f"Structured generation failed: {str(e)}",
+                        provider_name=self.name,
+                        context=ErrorContext.create(
+                            prompt_length=len(prompt),
+                            model_name=model_name,
+                            model_type=model_type,
+                            error=str(e),
+                            error_type=type(e).__name__
+                        ),
+                        cause=e
+                    )
+                raise
                 
         except Exception as e:
             if not isinstance(e, ProviderError):

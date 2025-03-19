@@ -6,7 +6,7 @@ configuration, initialization, and error handling.
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Type, TypeVar, Generic, List, Union
+from typing import Any, Dict, Optional, Type, TypeVar, Generic, List, Union, Callable
 import logging
 
 from ..core.models.settings import FlowSettings
@@ -23,6 +23,7 @@ class Provider(ABC, Generic[T]):
     1. Consistent initialization and cleanup pattern
     2. Configuration via settings models
     3. Clean error handling
+    4. Asynchronous execution with retry and timeout capabilities
     """
     
     def __init__(
@@ -58,9 +59,25 @@ class Provider(ABC, Generic[T]):
         Returns:
             Default settings for this provider
         """
-        # Get settings type from Generic
-        settings_type = self.__class__.__orig_bases__[0].__args__[0]
-        return settings_type()
+        try:
+            # Try to get settings type from Generic
+            settings_type = self.__class__.__orig_bases__[0].__args__[0]
+            return settings_type()
+        except (AttributeError, IndexError):
+            # Fallback for when type information is unavailable
+            # This can happen when the class is instantiated by factory functions
+            # that don't preserve generic type information
+            logger.debug(f"Type information unavailable for {self.__class__.__name__}, using fallback")
+            
+            # Option 1: Check if we have a specific provider settings class for this provider type
+            for base in self.__class__.__mro__:
+                if base.__name__.endswith('ProviderSettings') and base != FlowSettings:
+                    logger.debug(f"Using settings class {base.__name__} as fallback")
+                    return base()
+            
+            # Option 2: Default to general FlowSettings if nothing better is found
+            logger.debug("No specific settings class found, defaulting to FlowSettings")
+            return FlowSettings()  # type: ignore
     
     async def initialize(self) -> None:
         """Initialize the provider.
@@ -94,7 +111,7 @@ class Provider(ABC, Generic[T]):
                 )
     
     async def shutdown(self) -> None:
-        """Clean up provider resources.
+        """Close provider resources.
         
         This method:
         1. Ensures clean shutdown of provider resources
@@ -123,18 +140,10 @@ class Provider(ABC, Generic[T]):
         Default implementation does nothing.
         """
         pass
-
-
-class AsyncProvider(Provider[T]):
-    """Enhanced provider base with asynchronous execution support.
-    
-    This class adds support for asynchronous execution with timeout and retry
-    handling, useful for providers that interact with external services.
-    """
-    
+        
     async def execute_with_retry(
         self,
-        operation: callable,
+        operation: Callable,
         *args: Any,
         retries: Optional[int] = None,
         retry_delay: Optional[float] = None,
@@ -158,9 +167,9 @@ class AsyncProvider(Provider[T]):
             ResourceError: If operation fails after retries or times out
         """
         # Use provided values or defaults from settings
-        max_retries = retries if retries is not None else self.settings.max_retries
-        delay = retry_delay if retry_delay is not None else self.settings.retry_delay_seconds
-        timeout_seconds = timeout if timeout is not None else self.settings.timeout_seconds
+        max_retries = retries if retries is not None else getattr(self.settings, 'max_retries', 3)
+        delay = retry_delay if retry_delay is not None else getattr(self.settings, 'retry_delay_seconds', 1.0)
+        timeout_seconds = timeout if timeout is not None else getattr(self.settings, 'timeout_seconds', 30.0)
         
         # Ensure provider is initialized
         if not self._initialized:
@@ -215,4 +224,4 @@ class AsyncProvider(Provider[T]):
                 timeout=timeout_seconds
             ),
             cause=last_error
-        ) 
+        )

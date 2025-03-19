@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from ...core.errors import ProviderError, ErrorContext
 from ...core.models.settings import ProviderSettings
-from ..base import AsyncProvider
+from ..base import Provider
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class FileMetadata(BaseModel):
     metadata: Dict[str, str] = Field(default_factory=dict)
 
 
-class StorageProvider(AsyncProvider):
+class StorageProvider(Provider):
     """Base class for storage providers.
     
     This class provides:

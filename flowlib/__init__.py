@@ -32,7 +32,7 @@ from .flows import Flow, Stage, CompositeFlow, FlowBuilder, StandaloneStage
 from .flows import flow, stage, standalone, pipeline, stage_registry
 
 # Providers
-from .providers import Provider, AsyncProvider, create_provider
+from .providers import Provider, create_provider
 
 
 __version__ = "0.1.0"
@@ -87,7 +87,6 @@ __all__ = [
     
     # Providers
     "Provider",
-    "AsyncProvider",
     "create_provider",
     
     # Version

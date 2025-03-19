@@ -16,7 +16,7 @@ from enum import Enum
 from ...core.errors import ProviderError, ErrorContext
 from ...core.models.settings import LLMProviderSettings
 from ...core.registry import resource_registry as registry
-from ..base import AsyncProvider
+from ..base import Provider
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ T = TypeVar('T', bound=LLMProviderSettings)
 ModelType = TypeVar('ModelType', bound=BaseModel)
 
 
-class LLMProvider(AsyncProvider[T]):
+class LLMProvider(Provider[T]):
     """Base class for local LLM backends.
     
     This class provides the interface for:

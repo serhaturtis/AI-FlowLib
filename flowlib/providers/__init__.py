@@ -11,7 +11,7 @@ This package contains providers for various services, organized by type:
 """
 
 # Core imports
-from .base import Provider, AsyncProvider
+from .base import Provider
 from .factory import create_provider
 
 # Import from the registry system
@@ -42,7 +42,6 @@ from .storage.s3_provider import S3Provider, S3ProviderSettings
 __all__ = [
     # Base classes
     "Provider",
-    "AsyncProvider",
     
     # Factory function
     "create_provider",

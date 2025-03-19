@@ -116,9 +116,20 @@ def flow(cls=None, *, name: str = None):
         flow_metadata.update({"name": flow_name})
         cls.__flow_metadata__ = flow_metadata
         
-        # Register the flow class with the registry
-        stage_registry.register_flow(flow_name)
-        logger.debug(f"Registered flow class: {flow_name}")
+        # Create a flow instance to store in the registry
+        # This ensures flow instances are available through the registry
+        try:
+            flow_instance = cls()
+            # Set the name attribute directly on the flow instance
+            # This ensures flow.name returns the decorated name, not the class name
+            setattr(flow_instance, "name", flow_name)
+            # Register the flow with the registry, including the instance
+            stage_registry.register_flow(flow_name, flow_instance)
+            logger.debug(f"Registered flow class and instance: {flow_name}")
+        except Exception as e:
+            # If instantiation fails, still register the flow name
+            stage_registry.register_flow(flow_name)
+            logger.warning(f"Failed to create instance for flow '{flow_name}': {e}")
         
         # Count pipeline methods and collect stages
         pipeline_methods = []
@@ -176,6 +187,9 @@ def flow(cls=None, *, name: str = None):
         
         if not hasattr(cls, "get_stages"):
             setattr(cls, "get_stages", get_stages)
+            
+        # Store flow class name for easier debugging
+        cls.__flow_name__ = flow_name
             
         return cls
     

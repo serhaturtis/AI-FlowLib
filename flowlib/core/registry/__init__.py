@@ -12,7 +12,7 @@ from .provider_registry import ProviderRegistry
 from .decorators import (
     resource, model, prompt, config,
     provider, llm_provider, db_provider, vector_db_provider,
-    cache_provider, storage_provider, message_queue_provider
+    cache_provider, storage_provider, message_queue_provider, conversation_provider
 )
 
 # Create registry instances
@@ -53,5 +53,6 @@ __all__ = [
     "vector_db_provider",
     "cache_provider",
     "storage_provider",
-    "message_queue_provider"
+    "message_queue_provider",
+    "conversation_provider"
 ] 

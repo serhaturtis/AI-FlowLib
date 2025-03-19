@@ -18,10 +18,11 @@ from .constants import ProviderType
 
 logger = logging.getLogger(__name__)
 
-# Use a type variable and typing annotation
+
+# With this:
 T = TypeVar('T')
-# Use a string to represent Provider to avoid circular imports
-Provider = ForwardRef('Provider')
+# Use Any to avoid the __args__ attribute access issue
+Provider = Any 
 
 class ProviderRegistry(BaseRegistry[Any]):
     """Registry for provider instances.

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from ...core.errors import ProviderError, ErrorContext
 from ...core.models.settings import ProviderSettings
-from ..base import AsyncProvider
+from ..base import Provider
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class DBProviderSettings(ProviderSettings):
     retry_delay: float = 1.0
 
 
-class DBProvider(AsyncProvider, Generic[T]):
+class DBProvider(Provider, Generic[T]):
     """Base class for database providers.
     
     This class provides:

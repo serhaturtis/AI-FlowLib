@@ -80,8 +80,14 @@ class PineconeProvider(VectorDBProvider):
             name: Unique provider name
             settings: Optional provider settings
         """
+        # Create settings first to avoid issues with _default_settings() method
+        settings = settings or PineconeProviderSettings(api_key="", environment="", index_name="")
+        
+        # Pass explicit settings to parent class
         super().__init__(name=name, settings=settings)
-        self._settings = settings or PineconeProviderSettings(api_key="", environment="", index_name="")
+        
+        # Store settings for local use
+        self._settings = settings
         self._client = None
         self._index = None
         

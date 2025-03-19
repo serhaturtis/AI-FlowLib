@@ -27,17 +27,26 @@ class StageRegistry:
         
         # Set of standalone stage names (not associated with a specific flow)
         self._standalone_stages: Set[str] = set()
+        
+        # Store flow instances, not just names (NEW)
+        self._flow_instances: Dict[str, Any] = {}
     
-    def register_flow(self, flow_name: str) -> None:
+    def register_flow(self, flow_name: str, flow_instance: Optional[Any] = None) -> None:
         """
         Register a flow in the registry.
         
         Args:
             flow_name: The name of the flow to register.
+            flow_instance: The actual flow instance (optional).
         """
         if flow_name not in self._flow_stages:
             self._flow_stages[flow_name] = set()
             logger.debug(f"Registered flow: {flow_name}")
+            
+        # Store the flow instance if provided (NEW)
+        if flow_instance is not None:
+            self._flow_instances[flow_name] = flow_instance
+            logger.debug(f"Stored instance for flow: {flow_name}")
     
     def register_stage(
         self,
@@ -155,11 +164,40 @@ class StageRegistry:
         """
         return sorted(self._flow_stages.keys())
     
+    # NEW METHOD: Get flow instance by name
+    def get_flow(self, flow_name: str) -> Optional[Any]:
+        """
+        Get a flow instance by name.
+        
+        Args:
+            flow_name: Name of the flow to retrieve.
+            
+        Returns:
+            The flow instance if found, None otherwise.
+        """
+        flow_instance = self._flow_instances.get(flow_name)
+        if flow_instance:
+            logger.debug(f"Retrieved flow instance for: {flow_name}")
+        else:
+            logger.debug(f"No flow instance found for: {flow_name}")
+        return flow_instance
+    
+    # NEW METHOD: List all available flow instances
+    def get_flow_instances(self) -> Dict[str, Any]:
+        """
+        Get all registered flow instances.
+        
+        Returns:
+            Dict[str, Any]: Dictionary mapping flow names to flow instances.
+        """
+        return self._flow_instances.copy()
+    
     def clear(self) -> None:
         """Clear all registered stages and flows."""
         self._flow_stages.clear()
         self._stage_info.clear()
         self._standalone_stages.clear()
+        self._flow_instances.clear()  # NEW: Clear flow instances
         logger.debug("Cleared stage registry")
 
 

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from ...core.errors import ProviderError, ErrorContext
 from ...core.models.settings import ProviderSettings
-from ..base import AsyncProvider
+from ..base import Provider
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class MessageMetadata(BaseModel):
     headers: Dict[str, Any] = {}
 
 
-class MQProvider(AsyncProvider, Generic[T]):
+class MQProvider(Provider, Generic[T]):
     """Base class for message queue providers.
     
     This class provides:

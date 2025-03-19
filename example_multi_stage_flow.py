@@ -191,7 +191,7 @@ class ReportGenerationPrompt:
 @fl.model("text-analysis-model")
 class LLMModelConfig:
     """Configuration for the text analysis LLM."""
-    path = "/path/to/model"
+    path = "/path/to/model.gguf"
     model_type = "phi4"
     n_ctx = 4096
     n_threads = 4
@@ -254,7 +254,7 @@ class TextAnalysisFlow:
             formatted_prompt, 
             ExtractedInfo,
             "text-analysis-model",
-            temperature=0.2
+            **extraction_prompt.config
         )
         
         # Print debug information about the result
@@ -314,7 +314,7 @@ class TextAnalysisFlow:
             formatted_prompt, 
             SentimentResult,
             "text-analysis-model",
-            temperature=0.3
+            **sentiment_prompt.config
         )
         
         logger.info(f"Sentiment analysis complete: {result.sentiment} (score: {result.score})")
@@ -360,7 +360,7 @@ class TextAnalysisFlow:
             formatted_prompt, 
             TextSummary,
             "text-analysis-model",
-            temperature=0.4
+            **summarization_prompt.config
         )
         
         logger.info(f"Summary generated with {len(result.key_points)} key points")
@@ -413,7 +413,7 @@ class TextAnalysisFlow:
             formatted_prompt, 
             ReportResponse,  # Use our Pydantic model instead of dict
             "text-analysis-model",
-            temperature=0.5
+            **report_prompt.config
         )
         
         # Create the final report using the models we already have

@@ -5,16 +5,10 @@ for Qdrant, a vector similarity search engine.
 """
 
 import logging
-import asyncio
-import json
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
-from datetime import datetime
-
-from pydantic import Field
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
 from ...core.registry.decorators import provider
 from ...core.registry.constants import ProviderType
 from .base import VectorDBProvider, VectorDBProviderSettings, VectorMetadata, SimilaritySearchResult
@@ -89,8 +83,14 @@ class QdrantProvider(VectorDBProvider):
             name: Unique provider name
             settings: Optional provider settings
         """
+        # Create settings first to avoid issues with _default_settings() method
+        settings = settings or QdrantProviderSettings(host="localhost", port=6333)
+        
+        # Pass explicit settings to parent class
         super().__init__(name=name, settings=settings)
-        self._settings = settings or QdrantProviderSettings(host="localhost", port=6333)
+        
+        # Store settings for local use
+        self._settings = settings
         self._client = None
         self._collection_info = {}
         

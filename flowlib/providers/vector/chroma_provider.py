@@ -6,21 +6,17 @@ for ChromaDB, an open-source embedding database.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union
+from typing import Any, Dict, List, Optional, Collection
 import asyncio
 import uuid
 
-from pydantic import Field
-
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
-from ..base import AsyncProvider
 from .base import VectorDBProvider, VectorDBProviderSettings, SimilaritySearchResult
+from ...core.registry import provider
+from ...core.registry.constants import ProviderType
 
 logger = logging.getLogger(__name__)
 
-# Define Collection type for type annotations
-Collection = Any
 
 try:
     import chromadb
@@ -51,7 +47,7 @@ class ChromaDBProviderSettings(VectorDBProviderSettings):
     distance_function: str = "cosine"  # cosine, l2, ip
     anonymized_telemetry: bool = False
 
-
+@provider(provider_type=ProviderType.VECTOR_DB, name="chroma")
 class ChromaDBProvider(VectorDBProvider):
     """ChromaDB implementation of the VectorDBProvider.
     
@@ -66,8 +62,14 @@ class ChromaDBProvider(VectorDBProvider):
             name: Unique provider name
             settings: Optional provider settings
         """
+        # Create settings first to avoid issues with _default_settings() method
+        settings = settings or ChromaDBProviderSettings()
+        
+        # Pass explicit settings to parent class
         super().__init__(name=name, settings=settings)
-        self._settings = settings or ChromaDBProviderSettings()
+        
+        # Store settings for local use
+        self._settings = settings
         self._client = None
         self._collections = {}
         
@@ -150,6 +152,9 @@ class ChromaDBProvider(VectorDBProvider):
                 provider_name=self.name,
                 cause=e
             )
+        
+    async def _initialize(self) -> None:
+        pass
             
     async def _get_or_create_collection(self, index_name: str) -> Collection:
         """Get or create a ChromaDB collection.

@@ -68,8 +68,14 @@ class PostgreSQLProvider(DBProvider):
             name: Unique provider name
             settings: Optional provider settings
         """
+        # Create settings first to avoid issues with _default_settings() method
+        settings = settings or PostgreSQLProviderSettings()
+        
+        # Pass explicit settings to parent class
         super().__init__(name=name, settings=settings)
-        self._settings = settings or PostgreSQLProviderSettings()
+        
+        # Store settings for local use
+        self._settings = settings
         self._pool = None
         self._json_encoders = {
             # Custom JSON encoders for PostgreSQL

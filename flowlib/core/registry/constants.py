@@ -30,4 +30,5 @@ class ProviderType(str, Enum):
     STORAGE = "storage"
     MESSAGE_QUEUE = "message_queue"
     GPU = "gpu"
-    API = "api" 
+    API = "api"
+    CONVERSATION = "conversation" 

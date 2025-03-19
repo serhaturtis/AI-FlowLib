@@ -163,6 +163,19 @@ class MemoryCacheProvider(CacheProvider):
             else:
                 # Default to LRU
                 self._cache.popitem(last=False)
+
+    async def _initialize(self) -> None:
+        """Initialize in-memory cache provider.
+        
+        This is a simple implementation that just sets up the in-memory structures.
+        """
+        # Initialize cache data structures
+        self._cache = {}
+        self._expiry = {}
+        
+        # Start cleanup task if needed
+        if hasattr(self, '_cleanup_task') and self._cleanup_task is None:
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
                 
     async def get(self, key: str) -> Optional[Any]:
         """Get a value from in-memory cache.

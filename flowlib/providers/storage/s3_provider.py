@@ -84,8 +84,14 @@ class S3Provider(StorageProvider):
             name: Unique provider name
             settings: Optional provider settings
         """
+        # Create settings first to avoid issues with _default_settings() method
+        settings = settings or S3ProviderSettings()
+        
+        # Pass explicit settings to parent class
         super().__init__(name=name, settings=settings)
-        self._settings = settings or S3ProviderSettings()
+        
+        # Store settings for local use
+        self._settings = settings
         self._client = None
         self._resource = None
         self._async_session = None

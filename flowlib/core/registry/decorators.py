@@ -78,7 +78,22 @@ def prompt(name: str, **metadata):
     Returns:
         Decorator function
     """
-    return resource(name, ResourceType.PROMPT, **metadata)
+    def decorator(obj):
+        # Call the resource decorator
+        decorated_obj = resource(name, ResourceType.PROMPT, **metadata)(obj)
+        
+        # Add default config to all prompt resources as a direct attribute
+        decorated_obj.config = {
+            "max_tokens": 2048,
+            "temperature": 0.5,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0
+        }
+        
+        return decorated_obj
+    
+    return decorator
 
 def config(name: str, **metadata):
     """Register a class as a configuration resource.
@@ -117,8 +132,18 @@ def provider(name: str, provider_type: str = ProviderType.LLM, **metadata):
             
         # Create factory function
         def factory():
-            # Instantiate the class directly with the provider name
-            return cls(name=name)
+            # Try to find appropriate settings for this provider
+            settings = None
+            
+            # Look for provider-specific settings class
+            settings_class_name = f"{cls.__name__}Settings"
+            module = inspect.getmodule(cls)
+            if module and hasattr(module, settings_class_name):
+                settings_class = getattr(module, settings_class_name)
+                settings = settings_class()
+            
+            # Instantiate the class with the provider name and settings
+            return cls(name=name, settings=settings)
         
         # Register the factory
         provider_registry.register_factory(
@@ -160,4 +185,8 @@ def storage_provider(name: str, **metadata):
 
 def message_queue_provider(name: str, **metadata):
     """Register a class as a message queue provider factory."""
-    return provider(name, ProviderType.MESSAGE_QUEUE, **metadata) 
+    return provider(name, ProviderType.MESSAGE_QUEUE, **metadata)
+
+def conversation_provider(name: str, **metadata):
+    """Register a class as a conversation provider factory."""
+    return provider(name, ProviderType.CONVERSATION, **metadata) 

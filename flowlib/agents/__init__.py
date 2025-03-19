@@ -1,33 +1,25 @@
-"""Agent system for executing flows with reasoning and planning.
+"""
+Agent system for flowlib.
 
-This package provides agent implementations that can dynamically choose
-and execute flows based on task state and progress.
+This module provides an enhanced agent framework that uses LLMs for planning,
+input generation, and reflection on flow execution.
 """
 
-from .models import (
-    AgentState,
-    AgentConfig,
-    PlanningResponse,
-    ReflectionResponse,
-    FlowDescription
-)
-
-from .base import Agent
-from .llm_agent import LLMAgent
+from .base import Agent, AgentState
 from .decorators import agent
+from .memory_manager import MemoryManager, MemoryContext, MemoryItem
+from .discovery import FlowDiscovery
+from .full import FullConversationalAgent
+# Import prompts to ensure that decorated prompts are registered
+from . import prompts
 
 __all__ = [
-    # Base classes
     "Agent",
-    "LLMAgent",
-    
-    # Decorators
-    "agent",
-    
-    # Models
     "AgentState",
-    "AgentConfig",
-    "PlanningResponse",
-    "ReflectionResponse",
-    "FlowDescription"
+    "agent",
+    "MemoryManager",
+    "MemoryContext",
+    "MemoryItem",
+    "FlowDiscovery",
+    "FullConversationalAgent"
 ]
