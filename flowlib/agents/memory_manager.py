@@ -285,11 +285,11 @@ class MemoryManager:
             if key == "conversation_input":
                 # Special case for conversation input
                 try:
-                    from ..agents.flows import ConversationInput
+                    from ..agents.flows import MessageInput
                     if isinstance(content, dict):
-                        return ConversationInput(**content)
+                        return MessageInput(**content)
                 except ImportError:
-                    logger.warning("Could not import ConversationInput, returning raw content")
+                    logger.warning("Could not import MessageInput, returning raw content")
                     return content
             
             # If model_class is provided, try to deserialize into that class

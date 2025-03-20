@@ -13,11 +13,17 @@ from typing import List, Optional, Dict, Any
 
 import flowlib as fl
 from flowlib.core.models import Context
-# Import all flow classes explicitly to ensure their decorators register them
+
+# Import agent components from their direct modules to avoid circular imports
 from flowlib.agents.flows import (
-    ConversationInput, ConversationOutput, 
-    ConversationFlow, AgentPlanningFlow, AgentInputGenerationFlow, AgentReflectionFlow
+    MessageInput, 
+    ConversationOutput, 
+    ConversationFlow, 
+    AgentPlanningFlow, 
+    AgentInputGenerationFlow, 
+    AgentReflectionFlow
 )
+from flowlib.agents.flows.memory_flows import ConversationInput
 from flowlib.agents.models import AgentState
 from flowlib.agents import agent, MemoryContext, FullConversationalAgent
 from flowlib.agents.config import AgentConfig, ModelConfig
@@ -28,7 +34,7 @@ from flowlib.providers.conversation import (
 )
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # LLM Model Configuration - will be used if no config file is provided

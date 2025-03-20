@@ -1,23 +1,35 @@
-"""Agent-specific flow implementations.
+"""Conversation flow implementations for agent operations.
 
-This module provides flow implementations for core agent operations,
-including planning, input generation, and reflection.
+This module provides flow implementations for conversational agent functionality,
+including message handling, planning, input generation, and reflection.
 """
 
 import json
 import logging
 from typing import Dict, List, Any, Optional, Type, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 
 import flowlib as fl
-from ..core.models import Context
-from ..core.errors import ValidationError, ExecutionError, ErrorContext
-from ..core.registry.constants import ProviderType, ResourceType
+from flowlib.core.models import Context
+from flowlib.core.errors import ValidationError, ExecutionError, ErrorContext
+from flowlib.core.registry.constants import ProviderType, ResourceType
 
-from .models import PlanningResponse, ReflectionResponse
+from ..models import PlanningResponse, ReflectionResponse, MemoryItem
 
 logger = logging.getLogger(__name__)
+
+class MessageInput(BaseModel):
+    """Input for conversation flow containing a single message."""
+    message: str = Field(..., description="User message text")
+    model_name: str = Field("default", description="Model name to use for conversation")
+
+class ConversationOutput(BaseModel):
+    """Output from conversation flow."""
+    response: str = Field(..., description="Agent response text")
+    detected_intent: Optional[str] = Field(None, description="Detected user intent")
+    suggested_flow: Optional[str] = Field(None, description="Suggested flow to execute")
+    requires_task_execution: bool = Field(False, description="Whether this requires executing a task")
 
 class PlanningInput(BaseModel):
     """Input for planning flow."""
@@ -37,6 +49,34 @@ class InputGenerationInput(BaseModel):
     model_name: str = Field("default", description="Model name to use for input generation")
     output_type: str = Field(..., description="Name of the output type for validation")
 
+# Define a proper root model for dynamically generated flow inputs
+class GeneratedFlowInputs(RootModel):
+    """Output from input generation flow containing dynamically generated inputs for a flow."""
+    root: Dict[str, Any]
+    
+    # We provide dictionary-like access methods for backward compatibility
+    def __getitem__(self, key):
+        return self.root[key]
+    
+    def __iter__(self):
+        return iter(self.root)
+    
+    def items(self):
+        return self.root.items()
+    
+    def keys(self):
+        return self.root.keys()
+    
+    def values(self):
+        return self.root.values()
+    
+    def get(self, key, default=None):
+        return self.root.get(key, default)
+    
+    def __str__(self):
+        """Custom string representation for clearer flow schema display."""
+        return "GeneratedFlowInputs (Dictionary of dynamically generated inputs)"
+
 class ReflectionInput(BaseModel):
     """Input for reflection flow."""
     flow_name: str = Field(..., description="Name of the executed flow")
@@ -46,22 +86,15 @@ class ReflectionInput(BaseModel):
     current_state: Dict[str, Any] = Field(..., description="Current agent state")
     model_name: str = Field("default", description="Model name to use for reflection")
 
-class ConversationInput(BaseModel):
-    """Input for conversation flow."""
-    message: str = Field(..., description="User message text")
-    model_name: str = Field("default", description="Model name to use for conversation")
-
-class ConversationOutput(BaseModel):
-    """Output from conversation flow."""
-    response: str = Field(..., description="Agent response text")
-    detected_intent: Optional[str] = Field(None, description="Detected user intent")
-    suggested_flow: Optional[str] = Field(None, description="Suggested flow to execute")
-    requires_task_execution: bool = Field(False, description="Whether this requires executing a task")
-
 
 @fl.flow(name="agent-planning-flow")
 class AgentPlanningFlow:
     """Flow for agent planning decisions."""
+    
+    # Add schema definitions directly to flow class
+    input_schema = PlanningInput
+    output_schema = PlanningResponse
+    description = "A flow that determines the next action for the agent to take based on task description and available flows."
     
     @fl.stage(input_model=PlanningInput, output_model=PlanningResponse)
     async def plan(self, context: fl.Context) -> PlanningResponse:
@@ -70,17 +103,6 @@ class AgentPlanningFlow:
         input_data = context.data
         
         try:
-            # Special case: If task is to process a user message, prioritize the conversation flow
-            # REMOVING HARDCODED SELECTION to allow LLM to decide
-            # if input_data.task_description and input_data.task_description.startswith("Process user message:"):
-            #     logger.info("Detected user message task, prioritizing conversation flow")
-            #     return PlanningResponse(
-            #         reasoning="User has sent a message that requires a conversational response. The conversation-flow is designed specifically for processing user messages and generating appropriate responses.",
-            #         selected_flow="conversation-flow",
-            #         is_complete=False,
-            #         completion_reason=None
-            #     )
-            
             # Get planning prompt template
             planning_prompt = await fl.resource_registry.get(
                 "agent-planning", 
@@ -140,23 +162,37 @@ class AgentPlanningFlow:
     def _format_flows(self, flows: List[Dict[str, Any]]) -> str:
         """Format flows for prompt."""
         result = []
+        print("\n===== FORMATTING FLOWS FOR PROMPT =====")
+        print(f"Received {len(flows)} flows to format")
+        
         for flow in flows:
             # Format the flow name to stand out clearly
             flow_name = flow.get('name', 'unknown')
+            print(f"Processing flow: {flow_name}")
+            print(f"  Full flow data: {flow}")
+            
             flow_text = f"Flow name: {flow_name}\n"  # Remove quotes to avoid confusion
             
             if flow.get('description'):
                 flow_text += f"Description: {flow.get('description')}\n"
+                print(f"  Added description: {flow.get('description')}")
             if flow.get('input_schema'):
                 flow_text += f"Input: {flow.get('input_schema')}\n"
+                print(f"  Added input schema: {flow.get('input_schema')}")
+            else:
+                print("  No input_schema found in flow data")
             if flow.get('output_schema'):
                 flow_text += f"Output: {flow.get('output_schema')}\n"
+                print(f"  Added output schema: {flow.get('output_schema')}")
+            else:
+                print("  No output_schema found in flow data")
             result.append(flow_text)
         
         # Add a note about flow names
         if result:
             result.append("\nNOTE: When selecting a flow, use the exact flow name without any quotes.")
         
+        print("===== END FORMATTING FLOWS =====\n")
         return "\n".join(result) if result else "No flows available."
     
     def _format_state(self, state: Dict[str, Any]) -> str:
@@ -197,10 +233,15 @@ Step {i}:
 
 @fl.flow(name="agent-input-generation-flow")
 class AgentInputGenerationFlow:
-    """Flow for generating inputs for the selected flow."""
+    """Flow for generating inputs for a selected flow."""
     
-    @fl.stage(input_model=InputGenerationInput)
-    async def generate_inputs(self, context: fl.Context) -> Dict[str, Any]:
+    # Add schema definitions directly to flow class
+    input_schema = InputGenerationInput
+    output_schema = GeneratedFlowInputs
+    description = "A flow that generates structured input data for the selected flow based on the flow's input schema and task context."
+    
+    @fl.stage(input_model=InputGenerationInput, output_model=GeneratedFlowInputs)
+    async def generate_inputs(self, context: fl.Context) -> GeneratedFlowInputs:
         """Generate inputs for the selected flow."""
         # Get input data
         input_data = context.data
@@ -238,7 +279,7 @@ class AgentInputGenerationFlow:
             )
             
             # Parse the JSON response
-            return json.loads(json_response)
+            return GeneratedFlowInputs(root=json.loads(json_response))
             
         except Exception as e:
             logger.error(f"Error in input generation flow: {str(e)}")
@@ -259,8 +300,8 @@ class AgentInputGenerationFlow:
         
         return "\n".join(result) if result else "No state information."
     
-    @fl.pipeline
-    async def execute_input_generation(self, input_data: InputGenerationInput) -> Dict[str, Any]:
+    @fl.pipeline(input_model=InputGenerationInput, output_model=GeneratedFlowInputs)
+    async def execute_input_generation(self, input_data: InputGenerationInput) -> GeneratedFlowInputs:
         """Execute the input generation pipeline."""
         context = fl.Context(data=input_data)
         generate_stage = self.get_stage("generate_inputs")
@@ -270,7 +311,12 @@ class AgentInputGenerationFlow:
 
 @fl.flow(name="agent-reflection-flow")
 class AgentReflectionFlow:
-    """Flow for reflecting on execution results."""
+    """Flow for reflection on agent actions and their outcomes."""
+    
+    # Add schema definitions directly to flow class
+    input_schema = ReflectionInput
+    output_schema = ReflectionResponse
+    description = "A flow that analyzes the outcome of an action, identifies new information, and determines task progress."
     
     @fl.stage(input_model=ReflectionInput, output_model=ReflectionResponse)
     async def reflect(self, context: fl.Context) -> ReflectionResponse:
@@ -279,21 +325,6 @@ class AgentReflectionFlow:
         input_data = context.data
         
         try:
-            # For conversation flows, mark as complete after one execution
-            # REMOVING HARDCODED COMPLETION to allow LLM to decide if task is complete
-            # if input_data.flow_name == "conversation-flow":
-            #     logger.info("Conversation flow executed, marking task as complete")
-            #     return ReflectionResponse(
-            #         reflection="Successfully processed user message and generated a response.",
-            #         progress=100,
-            #         is_complete=True,
-            #         completion_reason="User message processed and response generated.",
-            #         new_information=[
-            #             f"User message: {input_data.flow_inputs}",
-            #             f"Agent response: {input_data.flow_outputs}"
-            #         ]
-            #     )
-            
             # Get reflection prompt template
             reflection_prompt = await fl.resource_registry.get(
                 "agent-reflection", 
@@ -319,7 +350,6 @@ class AgentReflectionFlow:
             print("===== END REFLECTION PROMPT =====\n")
             
             # DEBUG: Print the model schema
-            from .models import ReflectionResponse, MemoryItem
             print("\n===== EXPECTED MODEL SCHEMA =====")
             if hasattr(ReflectionResponse, "model_json_schema"):
                 print(json.dumps(ReflectionResponse.model_json_schema(), indent=2))
@@ -476,9 +506,14 @@ class AgentReflectionFlow:
 
 @fl.flow(name="conversation-flow")
 class ConversationFlow:
-    """Flow for handling conversations with users."""
+    """Flow for handling user conversation."""
     
-    @fl.stage(input_model=ConversationInput, output_model=ConversationOutput)
+    # Add schema definitions directly to flow class
+    input_schema = MessageInput
+    output_schema = ConversationOutput
+    description = "A flow that processes a user message, considers conversation history, and generates a contextually appropriate response."
+    
+    @fl.stage(input_model=MessageInput, output_model=ConversationOutput)
     async def process_message(self, context: fl.Context) -> ConversationOutput:
         """Process a user message and generate a response."""
         # Get input data
@@ -591,10 +626,10 @@ class ConversationFlow:
             
         return "\n".join(result)
     
-    @fl.pipeline(input_model=ConversationInput, output_model=ConversationOutput)
-    async def execute_conversation(self, input_data: ConversationInput) -> ConversationOutput:
+    @fl.pipeline(input_model=MessageInput, output_model=ConversationOutput)
+    async def execute_conversation(self, input_data: MessageInput) -> ConversationOutput:
         """Execute the conversation pipeline."""
         context = fl.Context(data=input_data)
         process_stage = self.get_stage("process_message")
         result = await process_stage.execute(context)
-        return result.data
+        return result.data 

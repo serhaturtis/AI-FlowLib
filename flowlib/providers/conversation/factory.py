@@ -49,9 +49,13 @@ def get_available_providers() -> Dict[str, str]:
     providers = {}
     
     # Get all conversation providers from the registry
-    for name, factory in provider_registry.get_providers_by_type("conversation").items():
+    # Use list_factories instead of get_providers_by_type which doesn't exist
+    provider_names = provider_registry.list_factories("conversation")
+    
+    for name in provider_names:
         try:
-            # Create a temporary instance to get the description
+            # Get the factory and create a temporary instance
+            factory = provider_registry.get_factory("conversation", name)
             provider = factory()
             providers[name] = provider.__class__.__doc__ or "No description available"
         except Exception as e:

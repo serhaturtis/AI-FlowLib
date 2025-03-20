@@ -123,6 +123,32 @@ def flow(cls=None, *, name: str = None):
             # Set the name attribute directly on the flow instance
             # This ensures flow.name returns the decorated name, not the class name
             setattr(flow_instance, "name", flow_name)
+            
+            # Find pipeline method to extract schemas and set them on the flow instance
+            for method_name in dir(cls):
+                method = getattr(cls, method_name)
+                if hasattr(method, '__pipeline__') and method.__pipeline__:
+                    # Get schemas from pipeline method
+                    input_schema = getattr(method, 'input_model', None)
+                    output_schema = getattr(method, 'output_model', None)
+                    
+                    # Set schemas on flow instance so they're available during registration
+                    if input_schema:
+                        setattr(flow_instance, "input_schema", input_schema)
+                        logger.debug(f"Set input_schema={input_schema.__name__} on flow '{flow_name}'")
+                    
+                    if output_schema:
+                        setattr(flow_instance, "output_schema", output_schema)
+                        logger.debug(f"Set output_schema={output_schema.__name__} on flow '{flow_name}'")
+                    
+                    # Get description from docstring or metadata
+                    if method.__doc__:
+                        description = method.__doc__.strip().split('\n')[0]
+                        setattr(flow_instance, "description", description)
+                        logger.debug(f"Set description from pipeline docstring on flow '{flow_name}'")
+                    
+                    break
+            
             # Register the flow with the registry, including the instance
             stage_registry.register_flow(flow_name, flow_instance)
             logger.debug(f"Registered flow class and instance: {flow_name}")
@@ -366,57 +392,38 @@ def pipeline(func: Optional[Callable] = None, **pipeline_kwargs):
     
     if output_model is not None and not (isinstance(output_model, type) and issubclass(output_model, BaseModel)):
         raise ValueError(f"Pipeline output_model must be a Pydantic BaseModel subclass, got {output_model}")
-    
+        
     def decorator(method):
         @functools.wraps(method)
-        async def wrapper(self, *args, **kwargs):
-            # Set up or retrieve context
-            ctx = kwargs.get("ctx", Context())
+        async def wrapper(*args, **kwargs):
+            """Wrapped pipeline method."""
+            # Track execution stats
+            start_time = datetime.datetime.now()
             
-            # Add execution metadata to the context
-            if not hasattr(ctx, "pipeline"):
-                ctx.pipeline = {
-                    "pipeline_name": method.__name__,
-                    "flow_class": self.__class__.__name__,
-                    "started_at": datetime.datetime.now().isoformat(),
-                    "stages": [],
-                }
+            try:
+                # Execute the pipeline method and return the result directly
+                result = await method(*args, **kwargs)
+                return result
+            finally:
+                # Calculate execution time
+                execution_time = datetime.datetime.now() - start_time
                 
-            # Initialize stage cache if needed
-            if not hasattr(self, "__stage_instances__"):
-                self.__stage_instances__ = {}
+                # Log execution details
+                if len(args) > 0 and hasattr(args[0], "__class__"):
+                    flow_class = args[0].__class__.__name__
+                    logger.debug(f"Pipeline execution: {flow_class}.{method.__name__} ({execution_time.total_seconds():.3f}s)")
             
-            # Validate input if input_model is specified
-            if input_model is not None:
-                # Check if first positional argument is the input
-                if args and len(args) > 0:
-                    # The first argument must be an instance of input_model
-                    if not isinstance(args[0], input_model):
-                        raise ValidationError(
-                            f"Pipeline '{method.__name__}' input must be an instance of {input_model.__name__}, got {type(args[0]).__name__}"
-                        )
-                
-            # Execute the pipeline method
-            result = await method(self, *args, **kwargs)
-            
-            # Validate result type against output_model if defined
-            if output_model is not None:
-                # Result must be an instance of the expected output model
-                if not isinstance(result, output_model):
-                    raise ValidationError(
-                        f"Pipeline '{method.__name__}' must return an instance of {output_model.__name__}, got {type(result).__name__}"
-                    )
-            
-            # Update completion metadata
-            if hasattr(ctx, "pipeline"):
-                ctx.pipeline["completed_at"] = datetime.datetime.now().isoformat()
-                
-            return result
-            
-        # Mark the method as a pipeline
+        # Mark the method as a pipeline with multiple attributes for compatibility
+        
+        # Modern style - these are the preferred attributes we'll use
         wrapper.__pipeline__ = True
         wrapper.__input_model__ = input_model
         wrapper.__output_model__ = output_model
+        
+        # Legacy style attributes - for backward compatibility
+        wrapper.input_model = input_model
+        wrapper.output_model = output_model
+        wrapper._pipeline = True
         
         return wrapper
         

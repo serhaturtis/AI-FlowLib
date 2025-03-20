@@ -94,6 +94,57 @@ class Flow(ABC, Generic[T]):
         self.metadata = metadata or {}
         self.error_manager = error_manager or default_manager
     
+    def get_pipeline_input_model(self) -> Optional[Type[BaseModel]]:
+        """Get the input model for this flow's pipeline.
+        
+        This method retrieves the input schema from either:
+        1. The pipeline method's __input_model__ attribute if available
+        2. The flow's input_schema attribute as a fallback
+        
+        Returns:
+            The input model class or None if not defined
+        """
+        # First check if we can get it from the pipeline method
+        pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
+        if pipeline_method_name:
+            pipeline_method = getattr(self, pipeline_method_name)
+            if pipeline_method and hasattr(pipeline_method, '__input_model__'):
+                return getattr(pipeline_method, '__input_model__')
+        
+        # Fall back to the flow's input_schema attribute
+        return self.input_schema
+    
+    def get_pipeline_output_model(self) -> Optional[Type[BaseModel]]:
+        """Get the output model for this flow's pipeline.
+        
+        This method retrieves the output schema from either:
+        1. The pipeline method's __output_model__ attribute if available
+        2. The flow's output_schema attribute as a fallback
+        
+        Returns:
+            The output model class or None if not defined
+        """
+        # First check if we can get it from the pipeline method
+        pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
+        if pipeline_method_name:
+            pipeline_method = getattr(self, pipeline_method_name)
+            if pipeline_method and hasattr(pipeline_method, '__output_model__'):
+                return getattr(pipeline_method, '__output_model__')
+        
+        # Fall back to the flow's output_schema attribute
+        return self.output_schema
+    
+    def get_pipeline_method(self) -> Optional[callable]:
+        """Get the pipeline method for this flow.
+        
+        Returns:
+            The pipeline method or None if not found
+        """
+        pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
+        if pipeline_method_name:
+            return getattr(self, pipeline_method_name, None)
+        return None
+    
     async def execute(self, context: Context) -> FlowResult:
         """Execute the flow with given context.
         

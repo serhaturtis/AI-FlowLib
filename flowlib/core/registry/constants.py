@@ -31,4 +31,5 @@ class ProviderType(str, Enum):
     MESSAGE_QUEUE = "message_queue"
     GPU = "gpu"
     API = "api"
-    CONVERSATION = "conversation" 
+    CONVERSATION = "conversation"
+    GRAPH_DB = "graph_db"  # Graph database provider 
