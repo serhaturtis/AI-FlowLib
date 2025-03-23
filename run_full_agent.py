@@ -30,7 +30,8 @@ from flowlib.agents.config import AgentConfig, ModelConfig
 from flowlib.core.registry.constants import ProviderType
 from flowlib.providers.conversation import (
     CLIConversationProvider, WebConversationProvider, APIConversationProvider,
-    create_conversation_provider, get_available_providers
+    create_conversation_provider, get_available_providers,
+    CLIConversationProviderSettings, WebConversationProviderSettings, APIConversationProviderSettings
 )
 
 # Set up logging
@@ -72,7 +73,7 @@ def debug_flow_registry(agent):
         logger.info(f"  class name: {flow_instance.__class__.__name__}")
 
 async def run_agent_with_provider(agent: FullConversationalAgent, provider_type: str, provider_settings: Optional[Dict[str, Any]] = None):
-    """Run the agent with the specified conversation provider.
+    """Run the agent with the specified provider.
     
     Args:
         agent: The agent to run
@@ -83,32 +84,30 @@ async def run_agent_with_provider(agent: FullConversationalAgent, provider_type:
     
     # Create the appropriate conversation provider
     if provider_type == "cli":
-        provider = CLIConversationProvider(
-            settings=provider_settings or {
-                "prompt": "You: ",
-                "exit_commands": ["exit", "quit", "bye"],
-                "show_execution_details": True
-            }
+        # Create proper settings object
+        cli_settings = CLIConversationProviderSettings(
+            show_execution_details=provider_settings.get("show_execution_details", True)
         )
+        provider = CLIConversationProvider(settings=cli_settings)
     elif provider_type == "web":
-        provider = WebConversationProvider(
-            settings=provider_settings or {
-                "host": "localhost",
-                "port": 8080,
-                "static_path": "./static",
-                "show_execution_details": True
-            }
+        # Create proper settings object
+        web_settings = WebConversationProviderSettings(
+            host=provider_settings.get("host", "localhost"),
+            port=provider_settings.get("port", 8080),
+            static_path=provider_settings.get("static_path", "./static"),
+            debug=provider_settings.get("show_execution_details", True)
         )
+        provider = WebConversationProvider(settings=web_settings)
     elif provider_type == "api":
-        provider = APIConversationProvider(
-            settings=provider_settings or {
-                "host": "localhost",
-                "port": 8081,
-                "conversation_timeout": 1800
-            }
+        # Create proper settings object
+        api_settings = APIConversationProviderSettings(
+            host=provider_settings.get("host", "localhost"),
+            port=provider_settings.get("port", 8081),
+            inactive_timeout=provider_settings.get("conversation_timeout", 1800)
         )
+        provider = APIConversationProvider(settings=api_settings)
     else:
-        logger.error(f"Unknown provider type: {provider_type}")
+        print(f"Unknown provider type: {provider_type}")
         return
     
     # Initialize the provider
@@ -135,9 +134,22 @@ async def run_agent_with_provider(agent: FullConversationalAgent, provider_type:
                 
                 # Show execution details if available
                 if hasattr(agent, "state") and agent.state:
+                    # Get the most recent execution details from history if available
+                    execution_history = agent.state.execution_history
+                    latest_execution = execution_history[-1] if execution_history else None
+                    
+                    # Extract latest plan and reflection from history if available
+                    latest_plan = next((item for item in reversed(execution_history) 
+                                      if item.get("type") == "plan"), None)
+                    latest_reflection = next((item for item in reversed(execution_history) 
+                                           if item.get("type") == "reflection"), None)
+                    
                     await provider.show_details({
                         "state": agent.state,
-                        "execution_history": agent.state.execution_history
+                        "execution_history": agent.state.execution_history,
+                        "latest_execution": latest_execution,
+                        "latest_plan": latest_plan,
+                        "latest_reflection": latest_reflection
                     })
                     
             except Exception as e:

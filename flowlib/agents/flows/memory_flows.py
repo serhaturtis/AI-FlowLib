@@ -23,6 +23,10 @@ from flowlib.agents.memory.models import Entity, EntityAttribute, EntityRelation
 from flowlib.agents.memory.utils import (
     normalize_entity_id, generate_entity_id, validate_entity
 )
+from flowlib.utils.formatting import format_conversation, extract_json
+
+from ..memory_manager import MemoryManager
+from .models import ExtractedEntities, RetrievedMemories
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +59,7 @@ class SearchQueryResult(BaseModel):
         query: The generated search query
     """
     query: str = Field(
-        description="Generated search query based on conversation context"
+        description="The generated search query"
     )
 
 class EntityExtractionResult(BaseModel):
@@ -65,7 +69,8 @@ class EntityExtractionResult(BaseModel):
         entities: List of extracted entities
     """
     entities: List[Dict[str, Any]] = Field(
-        description="List of extracted entities with their attributes and relationships"
+        default_factory=list,
+        description="List of extracted entities"
     )
 
 class EntityRetrievalQuery(BaseModel):
@@ -99,43 +104,6 @@ class MemorySearchInput(BaseModel):
     query: Optional[EntityRetrievalQuery] = Field(
         default=None,
         description="Explicit query for search"
-    )
-
-class ExtractedEntities(BaseModel):
-    """Output model for entity extraction flow.
-    
-    Attributes:
-        entities: List of extracted entities
-        summary: Text summary of what was extracted
-    """
-    entities: List[Entity] = Field(
-        default_factory=list,
-        description="List of extracted entities"
-    )
-    summary: str = Field(
-        default="",
-        description="Text summary of what was extracted"
-    )
-
-class RetrievedMemories(BaseModel):
-    """Output model for memory retrieval flow.
-    
-    Attributes:
-        entities: List of retrieved entities
-        context: Formatted context for prompt injection
-        relevance_scores: Relevance scores for retrieved entities
-    """
-    entities: List[Entity] = Field(
-        default_factory=list,
-        description="List of retrieved entities"
-    )
-    context: str = Field(
-        default="",
-        description="Formatted context for prompt injection"
-    )
-    relevance_scores: Dict[str, float] = Field(
-        default_factory=dict,
-        description="Relevance scores for retrieved entities"
     )
 
 # --- Flow Implementations ---
@@ -301,13 +269,8 @@ class MemoryExtractionFlow(Flow):
         Returns:
             Formatted conversation string
         """
-        formatted = []
-        for message in conversation:
-            speaker = message.get("speaker", "Unknown")
-            content = message.get("content", "")
-            formatted.append(f"{speaker}: {content}")
-            
-        return "\n".join(formatted)
+        # Use the shared formatting utility
+        return format_conversation(conversation)
         
     def _extract_json_data(self, text: str) -> Dict[str, Any]:
         """Extract JSON data from LLM response.
@@ -318,28 +281,23 @@ class MemoryExtractionFlow(Flow):
         Returns:
             Extracted JSON data
         """
-        try:
-            # Try to extract JSON object if embedded in text
-            if "{" in text and "}" in text:
-                start = text.find("{")
-                end = text.rfind("}") + 1
-                json_str = text[start:end]
-                return json.loads(json_str)
-            elif "[" in text and "]" in text:
-                # Maybe it's a list of entities without the wrapper
-                start = text.find("[")
-                end = text.rfind("]") + 1
-                json_str = text[start:end]
-                entity_list = json.loads(json_str)
-                return {"entities": entity_list}
-            else:
-                # No JSON found
-                logger.warning("No JSON data found in LLM response")
-                return {"entities": []}
-                
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON from LLM response: {e}")
+        # Use the shared JSON extraction utility 
+        json_data = extract_json(text)
+        
+        if not json_data:
+            logger.warning("No JSON data found in LLM response")
             return {"entities": []}
+            
+        # If it's already a dict with 'entities', return as is
+        if isinstance(json_data, dict) and "entities" in json_data:
+            return json_data
+            
+        # If it's a list, assume it's a list of entities
+        if isinstance(json_data, list):
+            return {"entities": json_data}
+            
+        # Otherwise, wrap in entities dict
+        return {"entities": [json_data]}
     
     def _create_entity_from_data(self, item: Dict[str, Any], source: str) -> Optional[Entity]:
         """Convert raw entity data to Entity object.

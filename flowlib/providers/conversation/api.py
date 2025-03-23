@@ -13,8 +13,8 @@ from collections import deque
 import uuid
 from aiohttp import web
 
-from ...core.registry import conversation_provider
-from .base import ConversationProvider
+from ...core.registry.decorators import conversation_provider
+from .base import ConversationProvider, ConversationProviderSettings
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +32,8 @@ class Conversation:
             conversation_id: Unique ID for the conversation
         """
         self.id = conversation_id
-        self.input_queue = asyncio.Queue()
-        self.messages = deque(maxlen=100)  # Store last 100 messages
-        self.last_response = None
-        self.details = None
-        self.last_error = None
+        self.messages = []
+        self.queue = asyncio.Queue()
         self.last_activity = asyncio.get_event_loop().time()
         
     def update_activity(self):
@@ -47,8 +44,8 @@ class Conversation:
         """Add a message to the conversation history.
         
         Args:
-            role: The sender of the message (user/agent/system)
-            content: The message content
+            role: Role of the sender ("user" or "assistant")
+            content: Message content
         """
         self.messages.append({
             "role": role,
@@ -57,32 +54,48 @@ class Conversation:
         })
         self.update_activity()
 
+
+class APIConversationProviderSettings(ConversationProviderSettings):
+    """Settings for API conversation provider.
+    
+    Attributes:
+        host: Host address to bind to
+        port: Port to listen on
+        inactive_timeout: Timeout for inactive conversations in seconds
+        max_history_size: Maximum number of messages to keep in history
+    """
+    host: str = "localhost"
+    port: int = 8081
+    inactive_timeout: int = 3600  # 1 hour
+    max_history_size: int = 100
+
+
 @conversation_provider("api")
-class APIConversationProvider(ConversationProvider):
+class APIConversationProvider(ConversationProvider[APIConversationProviderSettings]):
     """API-based conversation provider.
     
-    This provider facilitates conversations through a RESTful API interface,
-    allowing multiple simultaneous conversations with the agent.
+    This provider enables conversations through a RESTful API interface,
+    making it easy to integrate with external applications.
     """
     
-    def __init__(self, name: str = "api", settings: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, 
+        name: str = "api", 
+        settings: Optional[APIConversationProviderSettings] = None,
+        provider_type: str = "conversation"
+    ):
         """Initialize the API conversation provider.
         
         Args:
             name: Provider name
-            settings: Optional provider settings including:
-                - host: Host to bind the server to (default: "localhost")
-                - port: Port to bind the server to (default: 8081)
-                - conversation_timeout: Time in seconds after which inactive conversations are closed (default: 1800)
-                - auth_token: Optional authentication token for API requests
+            settings: Provider settings
+            provider_type: Provider type
         """
-        super().__init__(name, settings)
-        
-        # Get settings with defaults
-        self.host = self.settings.get("host", "localhost")
-        self.port = self.settings.get("port", 8081)
-        self.conversation_timeout = self.settings.get("conversation_timeout", 1800)  # 30 minutes
-        self.auth_token = self.settings.get("auth_token", None)
+        # Use default settings if none provided
+        if settings is None:
+            settings = APIConversationProviderSettings()
+            
+        super().__init__(name=name, settings=settings, provider_type=provider_type)
         
         # Initialize app and conversations
         self.app = web.Application()
@@ -109,9 +122,9 @@ class APIConversationProvider(ConversationProvider):
         # Start the web server
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
-        self.site = web.TCPSite(self.runner, self.host, self.port)
+        self.site = web.TCPSite(self.runner, self.settings.host, self.settings.port)
         await self.site.start()
-        logger.info(f"API interface started at http://{self.host}:{self.port}")
+        logger.info(f"API interface started at http://{self.settings.host}:{self.settings.port}")
         
         # Start cleanup task
         self.cleanup_task = asyncio.create_task(self._cleanup_inactive_conversations())
@@ -138,7 +151,7 @@ class APIConversationProvider(ConversationProvider):
                     return None
             
             # Get the next message from the current conversation queue
-            user_input = await self.current_conversation.input_queue.get()
+            user_input = await self.current_conversation.queue.get()
             self.current_conversation.add_message("user", user_input)
             return user_input
             
@@ -261,7 +274,7 @@ class APIConversationProvider(ConversationProvider):
                 return web.json_response({"error": "Missing 'message' field"}, status=400)
             
             # Put message in the queue
-            await conv.input_queue.put(data['message'])
+            await conv.queue.put(data['message'])
             
             # Make this the current conversation
             self.current_conversation = conv
@@ -364,7 +377,7 @@ class APIConversationProvider(ConversationProvider):
                 to_delete = []
                 
                 for conv_id, conv in self.conversations.items():
-                    if current_time - conv.last_activity > self.conversation_timeout:
+                    if current_time - conv.last_activity > self.settings.inactive_timeout:
                         to_delete.append(conv_id)
                 
                 for conv_id in to_delete:

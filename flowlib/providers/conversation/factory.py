@@ -7,7 +7,11 @@ import logging
 from typing import Optional, Dict, Any, Union, Type
 
 from ...core.registry import provider_registry
-from .base import ConversationProvider
+from ...core.registry.constants import ProviderType
+from .base import ConversationProvider, ConversationProviderSettings
+from .cli import CLIConversationProviderSettings
+from .web import WebConversationProviderSettings
+from .api import APIConversationProviderSettings
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +29,29 @@ def create_conversation_provider(
         A conversation provider instance, or None if the provider could not be created
     """
     try:
+        # Convert dictionary settings to the appropriate settings class
+        typed_settings = None
+        if settings:
+            if provider_name == "cli":
+                typed_settings = CLIConversationProviderSettings(**settings)
+            elif provider_name == "web":
+                typed_settings = WebConversationProviderSettings(**settings)
+            elif provider_name == "api":
+                typed_settings = APIConversationProviderSettings(**settings)
+            else:
+                # For unknown providers, create a base settings class
+                typed_settings = ConversationProviderSettings(**settings)
+        
         # Get the provider from the registry
-        provider = provider_registry.get("conversation", provider_name)
-        if not provider:
+        factory = provider_registry.get_factory(ProviderType.CONVERSATION, provider_name)
+        if not factory:
             logger.error(f"Conversation provider '{provider_name}' not found in registry")
             return None
-            
-        # Initialize with settings
-        if settings:
-            provider._settings = settings
+        
+        # Create provider instance with typed settings
+        provider = factory()
+        if typed_settings:
+            provider.settings = typed_settings
             
         return provider
     except Exception as e:
@@ -49,13 +67,12 @@ def get_available_providers() -> Dict[str, str]:
     providers = {}
     
     # Get all conversation providers from the registry
-    # Use list_factories instead of get_providers_by_type which doesn't exist
-    provider_names = provider_registry.list_factories("conversation")
+    provider_names = provider_registry.list_factories(ProviderType.CONVERSATION)
     
     for name in provider_names:
         try:
             # Get the factory and create a temporary instance
-            factory = provider_registry.get_factory("conversation", name)
+            factory = provider_registry.get_factory(ProviderType.CONVERSATION, name)
             provider = factory()
             providers[name] = provider.__class__.__doc__ or "No description available"
         except Exception as e:

@@ -153,8 +153,8 @@ class FullConversationalAgent(Agent):
                     print(f"Retrieved memories: {retrieved_memories}")
                     
                     # If we have relevant memories, format them for injection into context
-                    if retrieved_memories and retrieved_memories.formatted_context:
-                        memory_context = retrieved_memories.formatted_context
+                    if retrieved_memories and retrieved_memories.context:
+                        memory_context = retrieved_memories.context
                         logger.info(f"Retrieved {len(retrieved_memories.entities)} memories for context")
                         
                         # Store memory context for flows to use

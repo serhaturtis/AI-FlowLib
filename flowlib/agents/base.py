@@ -11,7 +11,9 @@ import json
 import uuid
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Union, TypeVar, Type, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Union, TypeVar, Type, TYPE_CHECKING, Callable
+import importlib
+import re
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +22,7 @@ from flowlib.core.registry.constants import ProviderType, ResourceType
 from flowlib.core.errors import ExecutionError, ErrorContext, ResourceError
 from flowlib.core.models.context import Context
 from flowlib.flows.base import Flow
+from flowlib.utils.formatting import format_schema_model
 
 from .models import AgentConfig, AgentState, PlanningResponse, ReflectionResponse, FlowDescription
 from .discovery import FlowDiscovery
@@ -545,7 +548,7 @@ class Agent:
                     self.last_result = result
                     
                     # Store flow results in memory
-                    result_data = result.data.dict() if hasattr(result.data, 'dict') else result.data.model_dump() if hasattr(result.data, 'model_dump') else result.data
+                    result_data = result.data.dict() if hasattr(result.data, 'dict') else result.data.model_dump() if hasattr(result.data, 'model_dump') else result.data.data
                     await self.memory.store(
                         "result",
                         result_data,
@@ -854,91 +857,8 @@ class Agent:
         Returns:
             A formatted string representation of the model schema
         """
-        if not model:
-            return None
-            
-        try:
-            model_name = model.__name__ if hasattr(model, "__name__") else str(model)
-            
-            # Try Pydantic v2 style first (model_fields)
-            if hasattr(model, "model_fields"):
-                fields = model.model_fields
-                field_strs = []
-                
-                for name, field in fields.items():
-                    # Handle different ways field types might be stored
-                    field_type = None
-                    
-                    # Try to get annotation directly
-                    if hasattr(field, "annotation"):
-                        annotation = field.annotation
-                        if hasattr(annotation, "__name__"):
-                            field_type = annotation.__name__
-                        elif hasattr(annotation, "_name"):
-                            field_type = annotation._name
-                        else:
-                            field_type = str(annotation)
-                    
-                    if field_type:
-                        field_strs.append(f"{name}: {field_type}")
-                    else:
-                        field_strs.append(name)
-                        
-                if field_strs:
-                    return f"{model_name} ({', '.join(field_strs)})"
-                
-            # Try Pydantic v1 style (__fields__)
-            if hasattr(model, "__fields__"):
-                fields = model.__fields__
-                field_strs = []
-                
-                for name, field in fields.items():
-                    # Handle different ways field types might be stored
-                    field_type = None
-                    
-                    # Try type_ attribute (older Pydantic versions)
-                    if hasattr(field, "type_") and hasattr(field.type_, "__name__"):
-                        field_type = field.type_.__name__
-                    # Try outer_type_ attribute
-                    elif hasattr(field, "outer_type_") and hasattr(field.outer_type_, "__name__"):
-                        field_type = field.outer_type_.__name__
-                    # Try annotation attribute
-                    elif hasattr(field, "annotation") and hasattr(field.annotation, "__name__"):
-                        field_type = field.annotation.__name__
-                    
-                    if field_type:
-                        field_strs.append(f"{name}: {field_type}")
-                    else:
-                        field_strs.append(name)
-                        
-                if field_strs:
-                    return f"{model_name} ({', '.join(field_strs)})"
-            
-            # Special handling for RootModel
-            if hasattr(model, "__origin__") and getattr(model.__origin__, "__name__", "") == "RootModel":
-                # Get root type annotation if possible
-                if hasattr(model, "__annotations__") and "root" in model.__annotations__:
-                    root_type = model.__annotations__["root"]
-                    root_type_name = getattr(root_type, "__name__", str(root_type))
-                    return f"{model_name} (Root: {root_type_name})"
-                else:
-                    return f"{model_name} (RootModel)"
-            
-            # Only as a last resort, try custom string method
-            if hasattr(model, "__str__"):
-                try:
-                    custom_str = str(model())
-                    if custom_str != model_name:
-                        return custom_str
-                except:
-                    pass  # Fall through if this fails
-                    
-            # If we can't extract field information, just return the model name
-            return model_name
-            
-        except Exception as e:
-            print(f"{error_context}: {str(e)}")
-            return str(model)
+        # Use the shared formatting utility
+        return format_schema_model(model, error_context)
             
     async def _generate_flow_inputs(self, flow_name: str, planning: PlanningResponse) -> Any:
         """Generate inputs for a flow.
@@ -1259,12 +1179,6 @@ class Agent:
             
             print(f"Extracted entities: {extracted_entities}")
             if hasattr(extracted_entities, "entities"):
-                print(f"Number of entities: {len(extracted_entities.entities)}")
-                for i, entity in enumerate(extracted_entities.entities):
-                    print(f"Entity {i+1}: ID={entity.id}, Type={entity.type}")
-            
-            # Store entities in memory
-            if extracted_entities.entities:
                 print(f"\n===== DEBUG: STORING ENTITIES IN MEMORY =====")
                 logger.info(f"Storing {len(extracted_entities.entities)} extracted entities in memory")
                 print(f"Calling hybrid_memory.store_entities with {len(extracted_entities.entities)} entities")

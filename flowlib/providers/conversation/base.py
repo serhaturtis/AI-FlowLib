@@ -5,35 +5,37 @@ handle interactions between users and agents through different interfaces.
 """
 
 import logging
-from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from abc import abstractmethod
+from typing import Optional, Dict, Any, TypeVar, Generic
 
 from ...core.models import Context
+from ...core.models.settings import FlowSettings
 from ...core.errors import ExecutionError
+from ..base import Provider
 
 logger = logging.getLogger(__name__)
 
-class ConversationProvider(ABC):
+# Define a type variable for conversation provider settings
+T = TypeVar('T', bound=FlowSettings)
+
+class ConversationProviderSettings(FlowSettings):
+    """Base settings class for conversation providers."""
+    pass
+
+class ConversationProvider(Provider[T], Generic[T]):
     """Base class for conversation providers.
     
     Conversation providers handle the interaction between users and agents
     through different interfaces (CLI, web, API, etc.).
     """
     
-    def __init__(self, name: str, settings: Optional[Dict[str, Any]] = None):
+    async def _initialize(self) -> None:
         """Initialize the conversation provider.
         
-        Args:
-            name: Provider name
-            settings: Optional provider settings
+        This method is called by the initialize() method in the Provider base class.
+        Derived classes should override this to perform their initialization.
         """
-        self.name = name
-        self.settings = settings or {}
-        self.initialized = False
-    
-    async def initialize(self):
-        """Initialize the conversation provider."""
-        self.initialized = True
+        logger.info(f"Initializing conversation provider: {self.name}")
     
     @abstractmethod
     async def get_next_input(self) -> Optional[str]:
@@ -77,11 +79,18 @@ class ConversationProvider(ABC):
             logger.error(f"Error in conversation: {str(error)}")
             return f"I encountered an unexpected error: {str(error)}"
             
+    async def start_conversation(self):
+        """Start a new conversation session."""
+        logger.info(f"Starting conversation with provider: {self.name}")
+    
+    async def end_conversation(self):
+        """End the current conversation session."""
+        logger.info(f"Ending conversation with provider: {self.name}")
+    
     async def shutdown(self):
-        """Clean up any resources used by the provider.
+        """Clean up resources used by the provider.
         
-        This method should be overridden by provider implementations
-        that need to perform cleanup operations before shutting down.
+        This method overrides the Provider base class method.
         """
         logger.info(f"Shutting down {self.name} conversation provider")
-        self.initialized = False 
+        await super().shutdown() 

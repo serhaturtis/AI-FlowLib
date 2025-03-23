@@ -17,6 +17,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from flowlib.core.errors import ValidationError
 from flowlib.agents.memory.models import Entity, EntityAttribute, EntityRelationship
+from flowlib.utils.formatting import format_entity_for_display, format_entities_as_context
 
 logger = logging.getLogger(__name__)
 
@@ -286,47 +287,9 @@ def format_entity_for_display(entity: Entity, detailed: bool = False) -> str:
     Returns:
         Formatted string representation
     """
-    lines = [f"Entity: {entity.type.title()} - {entity.id}"]
-    
-    # Add attributes
-    if entity.attributes:
-        lines.append("Attributes:")
-        for name, attr in sorted(entity.attributes.items()):
-            attr_line = f"  {name}: {attr.value}"
-            if detailed and attr.source:
-                attr_line += f" (from {attr.source}, confidence: {attr.confidence:.2f})"
-            lines.append(attr_line)
-    
-    # Add relationships
-    if entity.relationships:
-        lines.append("Relationships:")
-        # Group by relation type for cleaner display
-        rel_by_type = {}
-        for rel in entity.relationships:
-            if rel.relation_type not in rel_by_type:
-                rel_by_type[rel.relation_type] = []
-            rel_by_type[rel.relation_type].append(rel)
-            
-        for rel_type, rels in sorted(rel_by_type.items()):
-            targets = [rel.target_entity for rel in rels]
-            rel_line = f"  {rel_type}: {', '.join(targets)}"
-            lines.append(rel_line)
-    
-    # Add metadata if detailed
-    if detailed:
-        if entity.tags:
-            lines.append(f"Tags: {', '.join(entity.tags)}")
-            
-        if entity.importance is not None:
-            lines.append(f"Importance: {entity.importance:.2f}")
-            
-        if entity.source:
-            lines.append(f"Source: {entity.source}")
-            
-        if entity.last_updated:
-            lines.append(f"Last Updated: {entity.last_updated}")
-    
-    return "\n".join(lines)
+    # Forward to the shared formatting utility
+    from flowlib.utils.formatting.entities import format_entity_for_display as format_entity
+    return format_entity(entity, detailed)
 
 def format_entities_as_context(entities: List[Entity], include_relationships: bool = True) -> str:
     """Format multiple entities as context for prompt injection.
@@ -338,19 +301,9 @@ def format_entities_as_context(entities: List[Entity], include_relationships: bo
     Returns:
         Formatted context string
     """
-    if not entities:
-        return ""
-        
-    parts = ["Relevant memory information:"]
-    
-    for entity in entities:
-        entity_part = format_entity_for_display(
-            entity,
-            detailed=False  # Less verbose for context
-        )
-        parts.append(entity_part)
-    
-    return "\n\n".join(parts)
+    # Forward to the shared formatting utility
+    from flowlib.utils.formatting.entities import format_entities_as_context as format_entities
+    return format_entities(entities, include_relationships)
 
 def extract_entity_id_from_text(text: str, entity_type: Optional[str] = None) -> Optional[str]:
     """Extract an entity ID from text description.

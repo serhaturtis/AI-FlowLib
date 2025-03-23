@@ -17,7 +17,7 @@ import flowlib as fl
 from flowlib.core.errors import ProviderError, ErrorContext
 from flowlib.core.registry.constants import ProviderType
 from flowlib.providers.vector.base import VectorDBProvider
-from flowlib.agents.providers.graph.base import GraphDBProvider
+from flowlib.providers.graph.base import GraphDBProvider
 from flowlib.agents.memory.models import Entity, EntityAttribute, EntityRelationship
 
 logger = logging.getLogger(__name__)
@@ -443,13 +443,34 @@ class HybridMemoryManager:
                 
             # If no vector results or graph provider only, use graph query
             if not result.entities and self._graph_provider:
-                # Basic query implementation - this would be enhanced based on provider capabilities
-                graph_results = await self._graph_provider.query(
-                    f"type IN :types",
-                    {"types": entity_types} if entity_types else {}
-                )
+                # If entity_types is provided, we need to query each type separately
+                # since the graph provider doesn't support querying multiple types at once
+                if entity_types:
+                    graph_results = []
+                    # Process each entity type separately
+                    for entity_type in entity_types:
+                        # Use the supported "find_entities type={type}" format
+                        type_results = await self._graph_provider.query(
+                            f"find_entities type={entity_type}"
+                        )
+                        graph_results.extend(type_results)
+                else:
+                    # If no entity types specified, we need to handle this differently
+                    # The graph provider doesn't have a "get all entities" query format
+                    # We could either:
+                    # 1. Get entities by their similarity to the query (using vector search)
+                    # 2. Use a default entity type
+                    # Let's use a default approach here:
+                    graph_results = []
+                    # Try to find entities by name similarity as fallback
+                    if query:
+                        # Extract potential entity names from the query (simplified approach)
+                        potential_names = [word for word in query.split() if len(word) > 3]
+                        for name in potential_names[:3]:  # Limit to first 3 potential names
+                            name_results = await self._graph_provider.query(f"find_entities name={name}")
+                            graph_results.extend(name_results)
                 
-                # Convert results to Entity objects
+                # Convert results to Entity objects (limit to requested number)
                 for item in graph_results[:limit]:
                     entity_id = item.get("id")
                     if entity_id:

@@ -248,9 +248,14 @@ class MemoryGraphProvider(GraphDBProvider):
                 for rel in self.relationships[entity_id]:
                     if rel["direction"] == direction:
                         if relation_type is None or rel["type"] == relation_type:
-                            results.append(copy.deepcopy(rel))
-                            
+                            results.append({
+                                "source": entity_id,
+                                "target": rel["target"],
+                                "type": rel["type"],
+                                "properties": rel["properties"]
+                            })
                 return results
+                
         except Exception as e:
             raise ProviderError(
                 message=f"Failed to query relationships: {str(e)}",
@@ -287,27 +292,35 @@ class MemoryGraphProvider(GraphDBProvider):
                 if start_id not in self.entities:
                     return []
                     
-                visited = set()
-                results = []
+                visited_ids: Set[str] = set()
+                results: List[Entity] = []
                 
+                # Define recursive DFS function
                 async def dfs(entity_id: str, depth: int) -> None:
-                    """Depth-first search traversal."""
-                    if depth > max_depth or entity_id in visited:
+                    if depth > max_depth or entity_id in visited_ids:
                         return
                         
-                    visited.add(entity_id)
+                    visited_ids.add(entity_id)
                     
                     if entity_id in self.entities:
-                        # Add a copy of the entity to results
                         results.append(copy.deepcopy(self.entities[entity_id]))
                         
-                    if entity_id in self.relationships and depth < max_depth:
-                        for rel in self.relationships[entity_id]:
-                            if rel["direction"] == "outgoing":
-                                if relation_types is None or rel["type"] in relation_types:
-                                    await dfs(rel["target"], depth + 1)
+                    if depth < max_depth:
+                        # Get outgoing relationships
+                        rels = await self.query_relationships(
+                            entity_id,
+                            relation_type=None if relation_types is None else None,  # Query all types
+                            direction="outgoing"
+                        )
+                        
+                        for rel in rels:
+                            # Check if relation type matches filter
+                            if relation_types is None or rel["type"] in relation_types:
+                                await dfs(rel["target"], depth + 1)
                 
-                await dfs(start_id, 1)
+                # Start traversal
+                await dfs(start_id, 0)
+                
                 return results
                 
         except Exception as e:
@@ -316,6 +329,7 @@ class MemoryGraphProvider(GraphDBProvider):
                 provider_name=self.name,
                 context=ErrorContext.create(
                     start_id=start_id,
+                    relation_types=relation_types,
                     max_depth=max_depth
                 ),
                 cause=e
@@ -326,90 +340,163 @@ class MemoryGraphProvider(GraphDBProvider):
         query: str, 
         params: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Execute a query in the graph.
+        """Execute a simple query language for the in-memory graph.
         
-        For the in-memory provider, this is a basic implementation
-        that supports simple entity filtering queries.
+        Supports a limited set of commands:
+            - "find_entities type={entity_type}" - Find entities by type
+            - "find_entities name={name}" - Find entities by name
+            - "neighbors id={id} [relation={relation_type}]" - Find neighboring entities
+            - "path from={id} to={id} [max_depth={n}]" - Find path between entities
         
         Args:
-            query: Query string (simple filtering expressions)
+            query: Query string
             params: Optional query parameters
             
         Returns:
-            List of matching entity dictionaries
+            Query results
             
         Raises:
-            ProviderError: If query syntax is invalid
+            ProviderError: If query parsing fails
         """
         try:
-            # For in-memory implementation, we only support basic filtering
             async with self._lock:
-                results = []
-                query_params = params or {}
+                # Parse the query
+                query = query.strip().lower()
                 
-                # Simple parsing of equality conditions
-                conditions = []
-                if query:
-                    parts = [p.strip() for p in query.split("AND")]
-                    for part in parts:
-                        if "=" in part:
-                            field, value = [p.strip() for p in part.split("=", 1)]
-                            # Handle parameter substitution
-                            if value.startswith(":"):
-                                param_name = value[1:]
-                                if param_name in query_params:
-                                    value = query_params[param_name]
-                                else:
-                                    continue  # Skip if parameter not provided
-                            elif value.startswith("'") and value.endswith("'"):
-                                # String literal
-                                value = value[1:-1]
-                            conditions.append((field, value))
+                # Override query parameters with explicit params if provided
+                if params:
+                    param_dict = params
+                else:
+                    # Extract parameters from query string
+                    param_parts = [part.strip() for part in query.split(" ") if "=" in part]
+                    param_dict = {}
+                    for part in param_parts:
+                        key, value = part.split("=", 1)
+                        param_dict[key] = value
                 
-                # Filter entities based on conditions
-                for entity_id, entity in self.entities.items():
-                    entity_dict = entity.dict()
-                    match = True
+                # Find entities by type
+                if query.startswith("find_entities") and "type" in param_dict:
+                    entity_type = param_dict["type"]
+                    return self._find_entities_by_type(entity_type)
                     
-                    for field, value in conditions:
-                        # Handle dotted notation for nested fields
-                        if "." in field:
-                            parts = field.split(".")
-                            curr = entity_dict
-                            for part in parts[:-1]:
-                                if part in curr:
-                                    curr = curr[part]
-                                else:
-                                    match = False
-                                    break
-                            if match and parts[-1] in curr:
-                                if str(curr[parts[-1]]) != str(value):
-                                    match = False
-                            else:
-                                match = False
-                        else:
-                            # Top-level field
-                            if field in entity_dict:
-                                if str(entity_dict[field]) != str(value):
-                                    match = False
-                            else:
-                                match = False
+                # Find entities by name
+                elif query.startswith("find_entities") and "name" in param_dict:
+                    name = param_dict["name"]
+                    return self._find_entities_by_name(name)
                     
-                    if match:
-                        results.append(entity_dict)
-                
-                return results
-                
+                # Find neighbors
+                elif query.startswith("neighbors") and "id" in param_dict:
+                    entity_id = param_dict["id"]
+                    relation_type = param_dict.get("relation")
+                    return await self._find_neighbors(entity_id, relation_type)
+                    
+                # Find path between entities
+                elif query.startswith("path") and "from" in param_dict and "to" in param_dict:
+                    from_id = param_dict["from"]
+                    to_id = param_dict["to"]
+                    max_depth = int(param_dict.get("max_depth", "3"))
+                    return await self._find_path(from_id, to_id, max_depth)
+                    
+                else:
+                    raise ProviderError(
+                        message=f"Unsupported query: {query}",
+                        provider_name=self.name
+                    )
+                    
         except Exception as e:
             raise ProviderError(
                 message=f"Failed to execute query: {str(e)}",
                 provider_name=self.name,
                 context=ErrorContext.create(
-                    query=query
+                    query=query,
+                    params=params
                 ),
                 cause=e
             )
+            
+    def _find_entities_by_type(self, entity_type: str) -> List[Dict[str, Any]]:
+        """Find entities by type."""
+        results = []
+        for entity_id, entity in self.entities.items():
+            if entity.type.lower() == entity_type.lower():
+                results.append({"id": entity_id, "entity": entity.dict()})
+        return results
         
+    def _find_entities_by_name(self, name: str) -> List[Dict[str, Any]]:
+        """Find entities by name."""
+        results = []
+        for entity_id, entity in self.entities.items():
+            if name.lower() in entity.name.lower():
+                results.append({"id": entity_id, "entity": entity.dict()})
+        return results
+        
+    async def _find_neighbors(self, entity_id: str, relation_type: Optional[str]) -> List[Dict[str, Any]]:
+        """Find neighboring entities."""
+        if entity_id not in self.entities:
+            return []
+            
+        # Get relationships
+        rels = await self.query_relationships(
+            entity_id,
+            relation_type=relation_type,
+            direction="outgoing"
+        )
+        
+        results = []
+        for rel in rels:
+            target_id = rel["target"]
+            if target_id in self.entities:
+                results.append({
+                    "id": target_id,
+                    "relation": rel["type"],
+                    "entity": self.entities[target_id].dict()
+                })
+                
+        return results
+        
+    async def _find_path(self, from_id: str, to_id: str, max_depth: int) -> List[Dict[str, Any]]:
+        """Find path between entities."""
+        if from_id not in self.entities or to_id not in self.entities:
+            return []
+            
+        # BFS to find path
+        queue = [(from_id, [])]
+        visited = {from_id}
+        
+        while queue:
+            current_id, path = queue.pop(0)
+            
+            # Check if reached target
+            if current_id == to_id:
+                # Construct result
+                result_path = []
+                for i, node_id in enumerate(path + [current_id]):
+                    result_path.append({
+                        "position": i,
+                        "id": node_id,
+                        "entity": self.entities[node_id].dict()
+                    })
+                return result_path
+                
+            # Stop if max depth reached
+            if len(path) >= max_depth:
+                continue
+                
+            # Get outgoing relationships
+            rels = await self.query_relationships(
+                current_id,
+                relation_type=None,
+                direction="outgoing"
+            )
+            
+            for rel in rels:
+                next_id = rel["target"]
+                if next_id not in visited:
+                    visited.add(next_id)
+                    queue.append((next_id, path + [current_id]))
+                    
+        return []  # No path found
+    
     async def delete_entity(self, entity_id: str) -> bool:
         """Delete an entity and its relationships.
         
@@ -419,43 +506,34 @@ class MemoryGraphProvider(GraphDBProvider):
         Returns:
             True if entity was deleted, False if not found
         """
-        try:
-            async with self._lock:
-                if entity_id not in self.entities:
-                    return False
+        async with self._lock:
+            if entity_id not in self.entities:
+                return False
                 
-                # Find all relationships with this entity
-                if entity_id in self.relationships:
-                    # For each outgoing relationship, remove the corresponding incoming relationship
-                    for rel in self.relationships[entity_id]:
-                        if rel["direction"] == "outgoing":
-                            target_entity = rel["target"]
-                            if target_entity in self.relationships:
-                                # Remove the incoming relationship
-                                self.relationships[target_entity] = [
-                                    r for r in self.relationships[target_entity]
-                                    if not (r["direction"] == "incoming" and 
-                                            r["source"] == entity_id and
-                                            r["type"] == rel["type"])
-                                ]
+            # Delete the entity
+            del self.entities[entity_id]
+            
+            # Collect all relationships involving this entity
+            to_remove = []
+            for source_id, relations in self.relationships.items():
+                for rel in relations:
+                    if rel["target"] == entity_id:
+                        to_remove.append((source_id, rel))
+                        
+            # Remove relationships
+            for source_id, rel in to_remove:
+                if source_id in self.relationships:
+                    self.relationships[source_id] = [
+                        r for r in self.relationships[source_id]
+                        if not (r["target"] == entity_id and r["type"] == rel["type"])
+                    ]
                     
-                    # Delete entity's relationships
-                    del self.relationships[entity_id]
+            # Remove entity from relationships dict
+            if entity_id in self.relationships:
+                del self.relationships[entity_id]
                 
-                # Delete entity
-                del self.entities[entity_id]
-                return True
-                
-        except Exception as e:
-            raise ProviderError(
-                message=f"Failed to delete entity: {str(e)}",
-                provider_name=self.name,
-                context=ErrorContext.create(
-                    entity_id=entity_id
-                ),
-                cause=e
-            )
-        
+            return True
+            
     async def delete_relationship(
         self, 
         source_id: str, 
@@ -472,64 +550,76 @@ class MemoryGraphProvider(GraphDBProvider):
         Returns:
             True if relationships were deleted, False if none found
         """
-        try:
-            async with self._lock:
-                if source_id not in self.relationships or target_entity not in self.relationships:
-                    return False
+        async with self._lock:
+            # Check if entities exist
+            if source_id not in self.relationships or target_entity not in self.relationships:
+                return False
                 
-                deleted = False
+            deleted = False
+            
+            # Filter relationships to remove from source
+            if source_id in self.relationships:
+                original_count = len(self.relationships[source_id])
+                filtered_rels = []
                 
-                # Filter relationships to keep
-                new_source_rels = []
                 for rel in self.relationships[source_id]:
-                    if (rel["direction"] == "outgoing" and
-                        rel["target"] == target_entity and
-                        (relation_type is None or rel["type"] == relation_type)):
-                        # This is a relationship to delete
-                        deleted = True
-                    else:
-                        new_source_rels.append(rel)
-                
-                # Only update if we found relationships to delete
-                if deleted:
-                    self.relationships[source_id] = new_source_rels
+                    should_keep = True
                     
-                    # Also remove the corresponding relationships from target
-                    new_target_rels = []
-                    for rel in self.relationships[target_entity]:
-                        if (rel["direction"] == "incoming" and
-                            rel["source"] == source_id and
-                            (relation_type is None or rel["type"] == relation_type)):
-                            # This is a relationship to delete
-                            pass
-                        else:
-                            new_target_rels.append(rel)
+                    if rel["target"] == target_entity:
+                        if relation_type is None or rel["type"] == relation_type:
+                            should_keep = False
                             
-                    self.relationships[target_entity] = new_target_rels
-                    
-                    # Update entity relationship lists
-                    if source_id in self.entities:
-                        source_entity = self.entities[source_id]
-                        source_entity.relationships = [
-                            r for r in source_entity.relationships
-                            if not (r.target_entity == target_entity and
-                                   (relation_type is None or r.relation_type == relation_type))
-                        ]
+                    if should_keep:
+                        filtered_rels.append(rel)
                         
-                return deleted
+                self.relationships[source_id] = filtered_rels
+                deleted = deleted or (original_count > len(filtered_rels))
                 
-        except Exception as e:
-            raise ProviderError(
-                message=f"Failed to delete relationship: {str(e)}",
-                provider_name=self.name,
-                context=ErrorContext.create(
-                    source_id=source_id,
-                    target_entity=target_entity,
-                    relation_type=relation_type
-                ),
-                cause=e
-            )
-        
+            # Filter relationships to remove from target
+            if target_entity in self.relationships:
+                original_count = len(self.relationships[target_entity])
+                filtered_rels = []
+                
+                for rel in self.relationships[target_entity]:
+                    should_keep = True
+                    
+                    if rel["target"] == source_id:
+                        if relation_type is None or rel["type"] == relation_type:
+                            should_keep = False
+                            
+                    if should_keep:
+                        filtered_rels.append(rel)
+                        
+                self.relationships[target_entity] = filtered_rels
+                deleted = deleted or (original_count > len(filtered_rels))
+                
+            # Update entity objects if they exist
+            if source_id in self.entities:
+                source_entity = self.entities[source_id]
+                original_count = len(source_entity.relationships)
+                
+                source_entity.relationships = [
+                    r for r in source_entity.relationships
+                    if not (r.target_entity == target_entity and 
+                           (relation_type is None or r.relation_type == relation_type))
+                ]
+                
+                deleted = deleted or (original_count > len(source_entity.relationships))
+                
+            if target_entity in self.entities:
+                target_entity_obj = self.entities[target_entity]
+                original_count = len(target_entity_obj.relationships)
+                
+                target_entity_obj.relationships = [
+                    r for r in target_entity_obj.relationships
+                    if not (r.target_entity == source_id and 
+                           (relation_type is None or r.relation_type == relation_type))
+                ]
+                
+                deleted = deleted or (original_count > len(target_entity_obj.relationships))
+                
+            return deleted
+            
     async def remove_relationship(
         self,
         source_id: str,
@@ -544,69 +634,53 @@ class MemoryGraphProvider(GraphDBProvider):
             relation_type: Type of relationship
             
         Raises:
-            ProviderError: If source or target entity doesn't exist
+            ProviderError: If relationship removal fails
         """
-        # Check if entities and relationships exist
-        if source_id not in self.relationships or target_entity not in self.relationships:
-            # Relationship doesn't exist, nothing to do
-            return
-            
-        # Remove from source entity's relationships
-        new_source_rels = []
-        for rel in self.relationships[source_id]:
-            if not (rel["target"] == target_entity and
-                    rel["type"] == relation_type):
-                new_source_rels.append(rel)
-        self.relationships[source_id] = new_source_rels
-        
-        # Remove from target entity's relationships
-        new_target_rels = []
-        for rel in self.relationships[target_entity]:
-            if not (rel["target"] == source_id and
-                    rel["type"] == relation_type):
-                new_target_rels.append(rel)
-        self.relationships[target_entity] = new_target_rels
-        
-        # Remove from entity objects
-        if source_id in self.entities:
-            source_entity = self.entities[source_id]
-            source_entity.relationships = [
-                r for r in source_entity.relationships
-                if not (r.target_entity == target_entity and
-                       r.relation_type == relation_type)
-            ]
-            
-        if target_entity in self.entities:
-            target_entity_obj = self.entities[target_entity]
-            target_entity_obj.relationships = [
-                r for r in target_entity_obj.relationships
-                if not (r.target_entity == source_id and
-                       r.relation_type == relation_type)
-            ] 
+        try:
+            result = await self.delete_relationship(source_id, target_entity, relation_type)
+            if not result:
+                logger.warning(
+                    f"No relationship found to remove: {source_id} -> {relation_type} -> {target_entity}"
+                )
+        except Exception as e:
+            raise ProviderError(
+                message=f"Failed to remove relationship: {str(e)}",
+                provider_name=self.name,
+                context=ErrorContext.create(
+                    source_id=source_id,
+                    target_entity=target_entity,
+                    relation_type=relation_type
+                ),
+                cause=e
+            )
 
     async def _update_entity_relationships(self, entity_id: str, entity: Entity) -> None:
-        """Update an entity's relationships in the graph.
+        """Update entity relationships from entity object.
+        
+        Used internally to sync relationships structure with entity object.
         
         Args:
-            entity_id: Entity ID
+            entity_id: ID of the entity
             entity: Entity object with relationships
         """
-        # Clear existing relationships
+        # Clear existing relationships for this entity
         if entity_id in self.relationships:
-            self.relationships[entity_id] = []
-            
-        # Add relationships from entity
-        for rel in entity.relationships:
-            # Skip if target doesn't exist but log a warning
-            target_entity = rel.target_entity
-            if target_entity not in self.entities:
-                logger.warning(f"Skipping relationship to non-existent entity '{target_entity}' from entity '{entity_id}'")
-                continue
+            outgoing_rels = [r for r in self.relationships[entity_id] if r["direction"] == "outgoing"]
+            for rel in outgoing_rels:
+                await self.delete_relationship(entity_id, rel["target"], rel["type"])
                 
-            # Add the relationship
-            await self.add_relationship(
-                entity_id, 
-                target_entity,
-                rel.relation_type,
-                {"confidence": rel.confidence}
-            ) 
+        # Add new relationships
+        for rel in entity.relationships:
+            try:
+                await self.add_relationship(
+                    entity_id,
+                    rel.target_entity,
+                    rel.relation_type,
+                    {
+                        "confidence": rel.confidence,
+                        "source": rel.source,
+                        "timestamp": rel.timestamp
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to add relationship: {str(e)}") 

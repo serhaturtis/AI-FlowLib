@@ -14,6 +14,9 @@ import flowlib as fl
 from flowlib.core.models import Context
 from flowlib.core.errors import ValidationError, ExecutionError, ErrorContext
 from flowlib.core.registry.constants import ProviderType, ResourceType
+from flowlib.flows.base import Flow
+from flowlib.flows.decorators import flow, pipeline
+from flowlib.utils.formatting import format_flows, format_state, format_history, format_conversation
 
 from ..models import PlanningResponse, ReflectionResponse, MemoryItem
 
@@ -160,67 +163,33 @@ class AgentPlanningFlow:
             )
     
     def _format_flows(self, flows: List[Dict[str, Any]]) -> str:
-        """Format flows for prompt."""
-        result = []
-        print("\n===== FORMATTING FLOWS FOR PROMPT =====")
-        print(f"Received {len(flows)} flows to format")
+        """Format available flows for prompt.
         
+        Args:
+            flows: List of flow information dictionaries
+            
+        Returns:
+            Formatted flows string
+        """
+        print("===== START FORMATTING FLOWS =====")
         for flow in flows:
-            # Format the flow name to stand out clearly
-            flow_name = flow.get('name', 'unknown')
-            print(f"Processing flow: {flow_name}")
-            print(f"  Full flow data: {flow}")
-            
-            flow_text = f"Flow name: {flow_name}\n"  # Remove quotes to avoid confusion
-            
-            if flow.get('description'):
-                flow_text += f"Description: {flow.get('description')}\n"
-                print(f"  Added description: {flow.get('description')}")
-            if flow.get('input_schema'):
-                flow_text += f"Input: {flow.get('input_schema')}\n"
-                print(f"  Added input schema: {flow.get('input_schema')}")
-            else:
-                print("  No input_schema found in flow data")
-            if flow.get('output_schema'):
-                flow_text += f"Output: {flow.get('output_schema')}\n"
-                print(f"  Added output schema: {flow.get('output_schema')}")
-            else:
-                print("  No output_schema found in flow data")
-            result.append(flow_text)
+            print(f"Flow: {flow.get('name')}")
         
-        # Add a note about flow names
-        if result:
-            result.append("\nNOTE: When selecting a flow, use the exact flow name without any quotes.")
+        # Use the shared formatting utility
+        result = format_flows(flows)
         
         print("===== END FORMATTING FLOWS =====\n")
-        return "\n".join(result) if result else "No flows available."
+        return result
     
     def _format_state(self, state: Dict[str, Any]) -> str:
         """Format state for prompt."""
-        result = []
-        for key, value in state.items():
-            result.append(f"{key}: {value}")
-        
-        return "\n".join(result) if result else "No state information."
+        # Use the shared formatting utility
+        return format_state(state)
     
     def _format_history(self, history: List[Dict[str, Any]]) -> str:
         """Format execution history for prompt."""
-        result = []
-        for i, step in enumerate(history, 1):
-            if step.get("action") == "execute_flow":
-                result.append(f"""
-Step {i}:
-  Flow: {step.get('flow')}
-  Reasoning: {step.get('reasoning')}
-  Reflection: {step.get('reflection', 'None')}
-""")
-            elif step.get("action") == "error":
-                result.append(f"""
-Step {i}:
-  Error: {step.get('error')}
-""")
-        
-        return "\n".join(result) if result else "No execution history yet."
+        # Use the shared formatting utility
+        return format_history(history)
     
     @fl.pipeline(input_model=PlanningInput, output_model=PlanningResponse)
     async def execute_planning(self, input_data: PlanningInput) -> PlanningResponse:

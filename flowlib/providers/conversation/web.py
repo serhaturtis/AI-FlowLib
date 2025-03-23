@@ -12,37 +12,58 @@ from typing import Optional, Dict, Any, List, Set
 import aiohttp
 from aiohttp import web
 
-from ...core.registry import conversation_provider
-from .base import ConversationProvider
+from ...core.registry.decorators import conversation_provider
+from .base import ConversationProvider, ConversationProviderSettings
+from flowlib.utils.formatting import format_execution_details, make_serializable
 
 logger = logging.getLogger(__name__)
 
+class WebConversationProviderSettings(ConversationProviderSettings):
+    """Settings for web conversation provider.
+    
+    Attributes:
+        host: Host address to bind to
+        port: Port to listen on
+        static_path: Path to static files for the web UI
+        debug: Whether to run in debug mode
+    """
+    host: str = "localhost"
+    port: int = 8080
+    static_path: Optional[str] = None
+    debug: bool = False
+
 @conversation_provider("web")
-class WebConversationProvider(ConversationProvider):
+class WebConversationProvider(ConversationProvider[WebConversationProviderSettings]):
     """Web-based conversation provider.
     
     This provider facilitates conversations through a web interface,
     using websockets for real-time communication and a simple HTML/JS frontend.
     """
     
-    def __init__(self, name: str = "web", settings: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, 
+        name: str = "web", 
+        settings: Optional[WebConversationProviderSettings] = None,
+        provider_type: str = "conversation"
+    ):
         """Initialize the web conversation provider.
         
         Args:
             name: Provider name
-            settings: Optional provider settings including:
-                - host: Host to bind the server to (default: "localhost")
-                - port: Port to bind the server to (default: 8080)
-                - static_path: Path to static files (default: "./static")
-                - show_execution_details: Whether to show execution details (default: True)
+            settings: Provider settings
+            provider_type: Provider type
         """
-        super().__init__(name, settings)
+        # Use default settings if none provided
+        if settings is None:
+            settings = WebConversationProviderSettings()
+            
+        super().__init__(name=name, settings=settings, provider_type=provider_type)
         
         # Get settings with defaults
-        self.host = self.settings.get("host", "localhost")
-        self.port = self.settings.get("port", 8080)
-        self.static_path = self.settings.get("static_path", "./static")
-        self.show_execution_details = self.settings.get("show_execution_details", True)
+        self.host = self.settings.host
+        self.port = self.settings.port
+        self.static_path = self.settings.static_path
+        self.show_execution_details = self.settings.debug
         
         # Create the static directory if it doesn't exist
         if not os.path.exists(self.static_path):
@@ -214,69 +235,8 @@ class WebConversationProvider(ConversationProvider):
             
     def _format_execution_details(self, details: Dict[str, Any]) -> Dict[str, Any]:
         """Format execution details for display in the web interface."""
-        state = details.get("state")
-        execution_history = details.get("execution_history", [])
-        
-        # Make sure we return JSON serializable values
-        def make_serializable(obj):
-            """Convert complex objects to JSON serializable values."""
-            if hasattr(obj, '__dict__'):
-                # For object with __dict__, convert to dict
-                result = {}
-                for k, v in obj.__dict__.items():
-                    if not k.startswith('_'):  # Skip private attributes
-                        result[k] = make_serializable(v)
-                return result
-            elif isinstance(obj, dict):
-                # For dictionaries, recursively convert values
-                return {k: make_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, (list, tuple)):
-                # For lists/tuples, recursively convert items
-                return [make_serializable(i) for i in obj]
-            elif hasattr(obj, 'to_dict'):
-                # For objects with to_dict method
-                return make_serializable(obj.to_dict())
-            elif isinstance(obj, (str, int, float, bool, type(None))):
-                # Basic types are already serializable
-                return obj
-            else:
-                # For other types, convert to string
-                return str(obj)
-        
-        # Basic details about progress and completion
-        formatted = {
-            "progress": getattr(state, "progress", 0),
-            "complete": getattr(state, "is_complete", False)
-        }
-        
-        # Format planning information
-        planning_entries = [e for e in execution_history if e.get("action") == "plan"]
-        if planning_entries:
-            latest_plan = planning_entries[-1]
-            formatted["planning"] = {
-                "reasoning": latest_plan.get("reasoning", "No reasoning")[:200] + "...",
-                "flow": latest_plan.get("flow", "No flow selected")
-            }
-            
-        # Format execution information
-        formatted["executions"] = []
-        for execution in execution_history[-3:]:
-            formatted["executions"].append({
-                "action": execution.get("action", "unknown"),
-                "flow": execution.get("flow", "unknown")
-            })
-            
-        # Format reflection information
-        reflection_entries = [e for e in execution_history if e.get("action") == "reflect"]
-        if reflection_entries:
-            latest_reflection = reflection_entries[-1]
-            reflection = latest_reflection.get("reflection", "No reflection available")
-            
-            formatted["reflection"] = {
-                "text": reflection[:400] + "..." if len(reflection) > 400 else reflection
-            }
-            
-        return formatted
+        # Use the shared formatting utility
+        return format_execution_details(details)
         
     def _get_default_html(self) -> str:
         """Get default HTML for the chat interface."""

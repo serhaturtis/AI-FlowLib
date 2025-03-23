@@ -205,14 +205,14 @@ class GraphDBProvider(Provider[GraphDBProviderSettings]):
     async def delete_relationship(
         self, 
         source_id: str, 
-        target_id: str, 
+        target_entity: str, 
         relation_type: Optional[str] = None
     ) -> bool:
         """Delete relationship(s) between entities.
         
         Args:
             source_id: ID of the source entity
-            target_id: ID of the target entity
+            target_entity: ID of the target entity
             relation_type: Optional type to filter by
             
         Returns:
@@ -240,8 +240,8 @@ class GraphDBProvider(Provider[GraphDBProviderSettings]):
         for entity in entities:
             entity_id = await self.add_entity(entity)
             entity_ids.append(entity_id)
-        return entity_ids 
-
+        return entity_ids
+    
     @abstractmethod
     async def remove_relationship(
         self,
@@ -259,4 +259,4 @@ class GraphDBProvider(Provider[GraphDBProviderSettings]):
         Raises:
             ProviderError: If relationship removal fails
         """
-        pass 
+        raise NotImplementedError("Subclasses must implement remove_relationship()") 
