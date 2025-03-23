@@ -83,7 +83,7 @@ class MemoryGraphProvider(GraphDBProvider):
                 for rel in entity.relationships:
                     await self.add_relationship(
                         entity.id, 
-                        rel.target_id, 
+                        rel.target_entity, 
                         rel.relation_type,
                         {
                             "confidence": rel.confidence,
@@ -131,106 +131,93 @@ class MemoryGraphProvider(GraphDBProvider):
             return None
         
     async def add_relationship(
-        self, 
-        source_id: str, 
-        target_id: str, 
-        relation_type: str, 
-        properties: Optional[Dict[str, Any]] = None
+        self,
+        source_id: str,
+        target_entity: str,
+        relation_type: str,
+        properties: Dict[str, Any] = {}
     ) -> None:
-        """Add a relationship between entities.
+        """Add a relationship between two entities.
         
         Args:
             source_id: ID of the source entity
-            target_id: ID of the target entity
+            target_entity: Name or identifier of the target entity
             relation_type: Type of relationship
-            properties: Optional properties for the relationship
+            properties: Properties for the relationship
             
         Raises:
-            ProviderError: If source or target entity doesn't exist
+            ProviderError: If source entity doesn't exist
         """
-        try:
-            async with self._lock:
-                # Ensure both source and target entities exist
-                if source_id not in self.entities:
-                    raise ProviderError(
-                        message=f"Source entity {source_id} does not exist",
-                        provider_name=self.name
-                    )
-                
-                if target_id not in self.entities:
-                    raise ProviderError(
-                        message=f"Target entity {target_id} does not exist",
-                        provider_name=self.name
-                    )
-                    
-                # Ensure both source and target have entries in relationships
-                if source_id not in self.relationships:
-                    self.relationships[source_id] = []
-                if target_id not in self.relationships:
-                    self.relationships[target_id] = []
-                
-                # Default properties
-                props = properties or {}
-                if "timestamp" not in props:
-                    props["timestamp"] = datetime.now().isoformat()
-                
-                # Create relationship objects for both directions
-                outgoing = {
-                    "source": source_id,
-                    "target": target_id,
-                    "type": relation_type,
-                    "direction": "outgoing",
-                    "properties": props
-                }
-                
-                incoming = {
-                    "source": target_id,
-                    "target": source_id,
-                    "type": relation_type,
-                    "direction": "incoming",
-                    "properties": props
-                }
-                
-                # Add relationships (avoiding duplicates)
-                if not any(r["target"] == target_id and r["type"] == relation_type 
-                        for r in self.relationships[source_id]):
-                    self.relationships[source_id].append(outgoing)
-                    
-                if not any(r["target"] == source_id and r["type"] == relation_type 
-                        for r in self.relationships[target_id]):
-                    self.relationships[target_id].append(incoming)
-                    
-                # Add to entity's relationships list if not already there
-                source_entity = self.entities[source_id]
-                target_entity = self.entities[target_id]
-                
-                # Source -> Target relationship
-                if not any(r.target_id == target_id and r.relation_type == relation_type 
-                         for r in source_entity.relationships):
-                    rel = EntityRelationship(
-                        relation_type=relation_type,
-                        target_id=target_id,
-                        confidence=props.get("confidence", 0.9),
-                        source=props.get("source", "memory-graph"),
-                        timestamp=props.get("timestamp")
-                    )
-                    source_entity.relationships.append(rel)
-                
-                # Don't automatically add the inverse relationship to target entity
-                # as the relationship might not be bidirectional
-                
-        except ProviderError:
-            raise
-        except Exception as e:
+        # Check if source entity exists
+        if source_id not in self.entities:
             raise ProviderError(
-                message=f"Failed to add relationship: {str(e)}",
-                provider_name=self.name,
-                context=ErrorContext.create(
-                    source_id=source_id,
-                    target_id=target_id,
-                    relation_type=relation_type
-                ),
-                cause=e
+                message=f"Source entity {source_id} does not exist",
+                provider_name=self.name
+            )
+            
+        # Check if target entity exists - skip if it doesn't
+        if target_entity not in self.entities:
+            logger.warning(f"Skipping relationship creation: Target entity '{target_entity}' does not exist")
+            return
+            
+        # Initialize relationships for source entity if needed
+        if source_id not in self.relationships:
+            self.relationships[source_id] = []
+            
+        if target_entity not in self.relationships:
+            self.relationships[target_entity] = []
+            
+        # Create outgoing relationship
+        outgoing = {
+            "type": relation_type,
+            "target": target_entity,
+            "direction": "outgoing",
+            "properties": properties
+        }
+        
+        # Create incoming relationship
+        incoming = {
+            "type": relation_type,
+            "target": source_id,
+            "direction": "incoming",
+            "properties": properties
+        }
+        
+        # Add relationships if they don't already exist
+        if not any(r["target"] == target_entity and r["type"] == relation_type 
+                  for r in self.relationships[source_id]):
+            self.relationships[source_id].append(outgoing)
+            
+        if not any(r["target"] == source_id and r["type"] == relation_type
+                  for r in self.relationships[target_entity]):
+            self.relationships[target_entity].append(incoming)
+            
+        # Update entity objects
+        source_entity = self.entities[source_id]
+        target_entity_obj = self.entities[target_entity]
+        
+        # Add relationship to source entity if not already present
+        if not any(r.target_entity == target_entity and r.relation_type == relation_type
+                  for r in source_entity.relationships):
+            source_entity.relationships.append(
+                EntityRelationship(
+                    relation_type=relation_type,
+                    target_entity=target_entity,
+                    confidence=0.9,
+                    source="system"
+                )
+            )
+            
+        # Add relationship to target entity if not already present
+        if not any(r.target_entity == source_id and r.relation_type == relation_type
+                  for r in target_entity_obj.relationships):
+            target_entity_obj.relationships.append(
+                EntityRelationship(
+                    relation_type=relation_type,
+                    target_entity=source_id,
+                    confidence=0.9,
+                    source="system"
+                )
             )
         
     async def query_relationships(
@@ -442,11 +429,11 @@ class MemoryGraphProvider(GraphDBProvider):
                     # For each outgoing relationship, remove the corresponding incoming relationship
                     for rel in self.relationships[entity_id]:
                         if rel["direction"] == "outgoing":
-                            target_id = rel["target"]
-                            if target_id in self.relationships:
+                            target_entity = rel["target"]
+                            if target_entity in self.relationships:
                                 # Remove the incoming relationship
-                                self.relationships[target_id] = [
-                                    r for r in self.relationships[target_id]
+                                self.relationships[target_entity] = [
+                                    r for r in self.relationships[target_entity]
                                     if not (r["direction"] == "incoming" and 
                                             r["source"] == entity_id and
                                             r["type"] == rel["type"])
@@ -472,14 +459,14 @@ class MemoryGraphProvider(GraphDBProvider):
     async def delete_relationship(
         self, 
         source_id: str, 
-        target_id: str, 
+        target_entity: str, 
         relation_type: Optional[str] = None
     ) -> bool:
         """Delete relationship(s) between entities.
         
         Args:
             source_id: ID of the source entity
-            target_id: ID of the target entity
+            target_entity: ID of the target entity
             relation_type: Optional type to filter by
             
         Returns:
@@ -487,7 +474,7 @@ class MemoryGraphProvider(GraphDBProvider):
         """
         try:
             async with self._lock:
-                if source_id not in self.relationships or target_id not in self.relationships:
+                if source_id not in self.relationships or target_entity not in self.relationships:
                     return False
                 
                 deleted = False
@@ -496,7 +483,7 @@ class MemoryGraphProvider(GraphDBProvider):
                 new_source_rels = []
                 for rel in self.relationships[source_id]:
                     if (rel["direction"] == "outgoing" and
-                        rel["target"] == target_id and
+                        rel["target"] == target_entity and
                         (relation_type is None or rel["type"] == relation_type)):
                         # This is a relationship to delete
                         deleted = True
@@ -509,7 +496,7 @@ class MemoryGraphProvider(GraphDBProvider):
                     
                     # Also remove the corresponding relationships from target
                     new_target_rels = []
-                    for rel in self.relationships[target_id]:
+                    for rel in self.relationships[target_entity]:
                         if (rel["direction"] == "incoming" and
                             rel["source"] == source_id and
                             (relation_type is None or rel["type"] == relation_type)):
@@ -518,14 +505,14 @@ class MemoryGraphProvider(GraphDBProvider):
                         else:
                             new_target_rels.append(rel)
                             
-                    self.relationships[target_id] = new_target_rels
+                    self.relationships[target_entity] = new_target_rels
                     
                     # Update entity relationship lists
                     if source_id in self.entities:
                         source_entity = self.entities[source_id]
                         source_entity.relationships = [
                             r for r in source_entity.relationships
-                            if not (r.target_id == target_id and
+                            if not (r.target_entity == target_entity and
                                    (relation_type is None or r.relation_type == relation_type))
                         ]
                         
@@ -537,8 +524,89 @@ class MemoryGraphProvider(GraphDBProvider):
                 provider_name=self.name,
                 context=ErrorContext.create(
                     source_id=source_id,
-                    target_id=target_id,
+                    target_entity=target_entity,
                     relation_type=relation_type
                 ),
                 cause=e
+            )
+        
+    async def remove_relationship(
+        self,
+        source_id: str,
+        target_entity: str,
+        relation_type: str
+    ) -> None:
+        """Remove a relationship between two entities.
+        
+        Args:
+            source_id: ID of the source entity
+            target_entity: Name or identifier of the target entity
+            relation_type: Type of relationship
+            
+        Raises:
+            ProviderError: If source or target entity doesn't exist
+        """
+        # Check if entities and relationships exist
+        if source_id not in self.relationships or target_entity not in self.relationships:
+            # Relationship doesn't exist, nothing to do
+            return
+            
+        # Remove from source entity's relationships
+        new_source_rels = []
+        for rel in self.relationships[source_id]:
+            if not (rel["target"] == target_entity and
+                    rel["type"] == relation_type):
+                new_source_rels.append(rel)
+        self.relationships[source_id] = new_source_rels
+        
+        # Remove from target entity's relationships
+        new_target_rels = []
+        for rel in self.relationships[target_entity]:
+            if not (rel["target"] == source_id and
+                    rel["type"] == relation_type):
+                new_target_rels.append(rel)
+        self.relationships[target_entity] = new_target_rels
+        
+        # Remove from entity objects
+        if source_id in self.entities:
+            source_entity = self.entities[source_id]
+            source_entity.relationships = [
+                r for r in source_entity.relationships
+                if not (r.target_entity == target_entity and
+                       r.relation_type == relation_type)
+            ]
+            
+        if target_entity in self.entities:
+            target_entity_obj = self.entities[target_entity]
+            target_entity_obj.relationships = [
+                r for r in target_entity_obj.relationships
+                if not (r.target_entity == source_id and
+                       r.relation_type == relation_type)
+            ] 
+
+    async def _update_entity_relationships(self, entity_id: str, entity: Entity) -> None:
+        """Update an entity's relationships in the graph.
+        
+        Args:
+            entity_id: Entity ID
+            entity: Entity object with relationships
+        """
+        # Clear existing relationships
+        if entity_id in self.relationships:
+            self.relationships[entity_id] = []
+            
+        # Add relationships from entity
+        for rel in entity.relationships:
+            # Skip if target doesn't exist but log a warning
+            target_entity = rel.target_entity
+            if target_entity not in self.entities:
+                logger.warning(f"Skipping relationship to non-existent entity '{target_entity}' from entity '{entity_id}'")
+                continue
+                
+            # Add the relationship
+            await self.add_relationship(
+                entity_id, 
+                target_entity,
+                rel.relation_type,
+                {"confidence": rel.confidence}
             ) 

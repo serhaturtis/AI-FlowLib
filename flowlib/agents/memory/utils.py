@@ -71,71 +71,71 @@ def generate_entity_id(entity_type: str, name: Optional[str] = None) -> str:
     uuid_segment = str(uuid.uuid4())[:8]
     return f"{base}_{uuid_segment}"
 
-def merge_entities(existing: Entity, new: Entity, overwrite: bool = False) -> Entity:
-    """Merge two entities, keeping the newer information.
+def merge_entities(entity1: Entity, entity2: Entity) -> Entity:
+    """Merge two entities with the same ID.
     
-    This function merges attributes and relationships from two entities,
-    preferring the information from the newer entity if overlaps exist
-    and overwrite is True.
+    Combines attributes and relationships from both entities.
     
     Args:
-        existing: The existing entity
-        new: The new entity with potentially updated information
-        overwrite: Whether to overwrite existing attributes
+        entity1: First entity
+        entity2: Second entity
         
     Returns:
         Merged entity
-        
-    Raises:
-        EntityValidationError: If the entities have different IDs or types
     """
-    if existing.id != new.id:
-        raise ValidationError(
-            message=f"Cannot merge entities with different IDs: {existing.id} vs {new.id}"
-        )
+    # Ensure entities have the same ID
+    if entity1.id != entity2.id:
+        raise ValueError(f"Cannot merge entities with different IDs: {entity1.id} vs {entity2.id}")
         
-    if existing.type != new.type:
-        raise ValidationError(
-            message=f"Cannot merge entities with different types: {existing.type} vs {new.type}"
-        )
+    # Create a new entity with the same ID and type
+    merged = Entity(
+        id=entity1.id,
+        type=entity1.type,  # Use type from entity1
+        attributes={},
+        relationships=[],
+        importance=max(entity1.importance, entity2.importance),  # Take the higher importance
+        last_updated=datetime.now().isoformat()
+    )
     
-    # Start with a copy of the existing entity
-    merged = existing.copy(deep=True)
-    
-    # Update basic fields, keeping the newer timestamp
-    if new.last_updated and (not merged.last_updated or new.last_updated > merged.last_updated):
-        merged.last_updated = new.last_updated
-    
-    if new.source:
-        merged.source = new.source
-        
-    # Add importance scores using max value
-    if new.importance is not None:
-        if merged.importance is None:
-            merged.importance = new.importance
-        else:
-            merged.importance = max(merged.importance, new.importance)
-            
-    # Merge tags
-    if new.tags:
-        merged.tags = list(set(merged.tags + new.tags))
-        
     # Merge attributes
-    for attr_name, new_attr in new.attributes.items():
-        if attr_name not in merged.attributes or overwrite:
-            merged.attributes[attr_name] = new_attr.copy(deep=True)
-        else:
-            # If the new attribute has higher confidence, use it
-            existing_attr = merged.attributes[attr_name]
-            if new_attr.confidence and new_attr.confidence > existing_attr.confidence:
-                merged.attributes[attr_name] = new_attr.copy(deep=True)
+    all_attributes = {}
+    # Add attributes from entity1
+    for name, attr in entity1.attributes.items():
+        all_attributes[name] = attr
+        
+    # Add or update attributes from entity2
+    for name, attr in entity2.attributes.items():
+        if name not in all_attributes or attr.confidence > all_attributes[name].confidence:
+            all_attributes[name] = attr
+            
+    merged.attributes = all_attributes
     
-    # Merge relationships, avoiding duplicates
-    existing_rels = {(rel.relation_type, rel.target_id) for rel in merged.relationships}
-    for rel in new.relationships:
-        key = (rel.relation_type, rel.target_id)
+    # Merge relationships (avoiding duplicates)
+    all_relationships = []
+    # Start with all relationships from entity1
+    all_relationships.extend(entity1.relationships)
+    
+    # Track existing relationships by (type, target)
+    existing_rels = {(rel.relation_type, rel.target_entity) for rel in merged.relationships}
+    
+    # Add relationships from entity2 if not already present or if higher confidence
+    for rel in entity2.relationships:
+        key = (rel.relation_type, rel.target_entity)
         if key not in existing_rels:
-            merged.relationships.append(rel.copy(deep=True))
+            all_relationships.append(rel)
+        else:
+            # Find the existing relationship with the same key
+            for i, existing_rel in enumerate(all_relationships):
+                if (existing_rel.relation_type, existing_rel.target_entity) == key:
+                    # Replace if confidence is higher
+                    if rel.confidence > existing_rel.confidence:
+                        all_relationships[i] = rel
+                    break
+    
+    merged.relationships = all_relationships
+    
+    # Merge tags
+    merged.tags = list(set(entity1.tags + entity2.tags))
     
     return merged
 
@@ -169,7 +169,7 @@ def entity_to_dict(entity: Entity, include_relationships: bool = True) -> Dict[s
             rel_type = rel.relation_type
             if rel_type not in relationships:
                 relationships[rel_type] = []
-            relationships[rel_type].append(rel.target_id)
+            relationships[rel_type].append(rel.target_entity)
         
         result["relationships"] = relationships
         
@@ -245,7 +245,7 @@ def dict_to_entity(data: Dict[str, Any]) -> Entity:
                         entity.relationships.append(
                             EntityRelationship(
                                 relation_type=rel_type,
-                                target_id=target,
+                                target_entity=target,
                                 source=data.get("source"),
                                 confidence=1.0,  # Default confidence for direct relationships
                                 timestamp=data.get("last_updated")
@@ -256,7 +256,7 @@ def dict_to_entity(data: Dict[str, Any]) -> Entity:
                     entity.relationships.append(
                         EntityRelationship(
                             relation_type=rel_type,
-                            target_id=targets,
+                            target_entity=targets,
                             source=data.get("source"),
                             confidence=1.0,
                             timestamp=data.get("last_updated")
@@ -308,7 +308,7 @@ def format_entity_for_display(entity: Entity, detailed: bool = False) -> str:
             rel_by_type[rel.relation_type].append(rel)
             
         for rel_type, rels in sorted(rel_by_type.items()):
-            targets = [rel.target_id for rel in rels]
+            targets = [rel.target_entity for rel in rels]
             rel_line = f"  {rel_type}: {', '.join(targets)}"
             lines.append(rel_line)
     
@@ -415,7 +415,7 @@ def calculate_entity_hash(entity: Entity) -> str:
             name: attr.value for name, attr in entity.attributes.items()
         },
         "relationships": [
-            {"type": rel.relation_type, "target": rel.target_id}
+            {"type": rel.relation_type, "target": rel.target_entity}
             for rel in entity.relationships
         ]
     }
@@ -454,11 +454,11 @@ def validate_entity(entity: Entity) -> Tuple[bool, List[str]]:
     
     # Check relationships
     for i, rel in enumerate(entity.relationships):
-        if not rel.target_id:
-            errors.append(f"Relationship {i} is missing target_id")
-            
         if not rel.relation_type:
             errors.append(f"Relationship {i} is missing relation_type")
+            
+        if not rel.target_entity:
+            errors.append(f"Relationship {i} is missing target_entity")
             
         if rel.confidence is not None and (rel.confidence < 0 or rel.confidence > 1):
             errors.append(f"Relationship {i} has invalid confidence {rel.confidence}")
@@ -467,4 +467,86 @@ def validate_entity(entity: Entity) -> Tuple[bool, List[str]]:
     if entity.importance is not None and (entity.importance < 0 or entity.importance > 1):
         errors.append(f"Entity has invalid importance {entity.importance}")
     
-    return (len(errors) == 0, errors) 
+    return (len(errors) == 0, errors)
+
+def get_entity_relationships(entity: Entity) -> Dict[str, List[str]]:
+    """Extract relationships from an entity, grouped by relation type.
+    
+    Args:
+        entity: The entity to process
+        
+    Returns:
+        Dictionary mapping relation types to lists of target entity IDs
+    """
+    relationships = {}
+    
+    for rel in entity.relationships:
+        rel_type = rel.relation_type
+        if rel_type not in relationships:
+            relationships[rel_type] = []
+            
+        relationships[rel_type].append(rel.target_entity)
+        
+    return relationships
+
+def create_entity_relationship(source: Entity, relation_type: str, target: str) -> None:
+    """Create a relationship between source entity and target.
+    
+    Args:
+        source: Source entity
+        relation_type: Type of relationship
+        target: Target entity ID
+    """
+    # Ensure the relationship doesn't already exist
+    for rel in source.relationships:
+        if rel.relation_type == relation_type and rel.target_entity == target:
+            return  # Relationship already exists
+            
+    # Add the relationship
+    source.relationships.append(
+        EntityRelationship(
+            relation_type=relation_type,
+            target_entity=target,
+            confidence=0.9,
+            source="system"
+        )
+    )
+
+def create_entity_relationships(source: Entity, relation_type: str, targets: List[str]) -> None:
+    """Create relationships between source entity and multiple targets.
+    
+    Args:
+        source: Source entity
+        relation_type: Type of relationship 
+        targets: List of target entity IDs
+    """
+    for target in targets:
+        create_entity_relationship(source, relation_type, target)
+
+def get_related_entities(entities: List[Entity], relation_type: Optional[str] = None) -> List[str]:
+    """Get the IDs of entities related to the given entities.
+    
+    Args:
+        entities: List of entities to check for relationships
+        relation_type: Optional relation type to filter by
+        
+    Returns:
+        List of related entity IDs
+    """
+    related = set()
+    
+    for entity in entities:
+        # Filter relationships by type if specified
+        rels = entity.relationships
+        if relation_type:
+            rels = [r for r in rels if r.relation_type == relation_type]
+            
+        # Add target IDs to related set
+        targets = [rel.target_entity for rel in rels]
+        related.update(targets)
+        
+    # Remove original entities from result
+    original_ids = {e.id for e in entities}
+    related = related - original_ids
+    
+    return list(related) 

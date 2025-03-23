@@ -25,7 +25,7 @@ C = TypeVar('C', bound=type)
 # Setup logging
 logger = logging.getLogger(__name__)
 
-def flow(cls=None, *, name: str = None):
+def flow(cls=None, *, name: str = None, is_infrastructure: bool = False):
     """
     Decorator to mark a class as a flow.
     
@@ -36,6 +36,7 @@ def flow(cls=None, *, name: str = None):
     Args:
         cls: The class to decorate
         name: Optional custom name for the flow
+        is_infrastructure: Whether this is an infrastructure flow (not selectable during planning)
         
     Returns:
         The decorated flow class
@@ -113,8 +114,11 @@ def flow(cls=None, *, name: str = None):
         # Set flow metadata
         flow_name = name or cls.__name__
         flow_metadata = getattr(cls, "__flow_metadata__", {})
-        flow_metadata.update({"name": flow_name})
+        flow_metadata.update({"name": flow_name, "is_infrastructure": is_infrastructure})
         cls.__flow_metadata__ = flow_metadata
+        
+        # Set the is_infrastructure flag directly on the class
+        cls.is_infrastructure = is_infrastructure
         
         # Create a flow instance to store in the registry
         # This ensures flow instances are available through the registry

@@ -354,50 +354,53 @@ class HybridMemoryManager:
             )
     
     async def add_relationship(
-        self, 
-        source_id: str, 
-        target_id: str, 
-        relation_type: str, 
+        self,
+        source_id: str,
+        target_entity: str,
+        relation_type: str,
         properties: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Add a relationship between entities.
-        
-        This method adds a relationship in the graph database if available,
-        and updates the entities in working memory.
+        """Add a relationship between two entities.
         
         Args:
             source_id: ID of the source entity
-            target_id: ID of the target entity
+            target_entity: Name or identifier of the target entity
             relation_type: Type of relationship
             properties: Optional properties for the relationship
             
         Raises:
-            ProviderError: If relationship creation fails
+            EntityNotFoundError: If either entity doesn't exist
         """
-        await self._ensure_initialized()
+        # Check that both entities exist
+        source_entity = await self.get_entity(source_id)
+        target_entity_obj = await self.get_entity(target_entity)
         
-        try:
-            # Add relationship in graph database if available
-            if self._graph_provider:
-                await self._graph_provider.add_relationship(
-                    source_id, target_id, relation_type, properties
-                )
+        # Add to graph database
+        await self._graph_provider.add_relationship(
+            source_id=source_id,
+            target_entity=target_entity,
+            relation_type=relation_type,
+            properties=properties or {}
+        )
+        
+        # Add relationship to source entity
+        for rel in source_entity.relationships:
+            if rel.relation_type == relation_type and rel.target_entity == target_entity:
+                # Relationship already exists
+                return
                 
-                # Update entities in working memory
-                source_entity = await self.get_entity(source_id)
-                target_entity = await self.get_entity(target_id)
-                
-        except Exception as e:
-            raise ProviderError(
-                message=f"Failed to add relationship: {str(e)}",
-                provider_name="hybrid_memory",
-                context=ErrorContext.create(
-                    source_id=source_id,
-                    target_id=target_id,
-                    relation_type=relation_type
-                ),
-                cause=e
+        # Add the new relationship
+        source_entity.relationships.append(
+            EntityRelationship(
+                relation_type=relation_type,
+                target_entity=target_entity,
+                confidence=0.9,
+                source="system"
             )
+        )
+        
+        # Update the entity in the registry
+        await self._update_entity(source_entity)
     
     async def search_memory(
         self, 
@@ -500,7 +503,7 @@ class HybridMemoryManager:
                     if entity.relationships:
                         entity_str += "Relationships:\n"
                         for rel in entity.relationships:
-                            entity_str += f"  {rel.relation_type} -> {rel.target_id}\n"
+                            entity_str += f"  {rel.relation_type} -> {rel.target_entity}\n"
                     
                     context_parts.append(entity_str)
                 

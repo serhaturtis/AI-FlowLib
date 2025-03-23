@@ -292,6 +292,16 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
             top_k = kwargs.get("top_k", getattr(model_config, "top_k", 40))
             repeat_penalty = kwargs.get("repeat_penalty", getattr(model_config, "repeat_penalty", 1.1))
             
+            # Debug model and type info
+            print(f"===== DEBUG: OUTPUT TYPE INFO =====")
+            print(f"Output type class: {output_type}")
+            print(f"Output type dir: {dir(output_type)}")
+            if hasattr(output_type, '__annotations__'):
+                print(f"Output type annotations: {output_type.__annotations__}")
+            if hasattr(output_type, 'model_fields'):
+                print(f"Output type model_fields: {output_type.model_fields}")
+            print("===== END DEBUG: OUTPUT TYPE INFO =====\n")
+            
             # Log generation parameters
             logger.info("Starting LLM structured generation with parameters:")
             logger.info(f"  Model: {model_name}")
@@ -311,38 +321,70 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
                 from llama_cpp import LlamaGrammar
                 
                 # Get schema from model
+                print("\n===== DEBUG: CREATING GRAMMAR =====")
                 if hasattr(output_type, "model_json_schema"):
                     # Pydantic v2
+                    print("Using Pydantic v2 model_json_schema")
                     schema = output_type.model_json_schema()
                 else:
                     # Pydantic v1
+                    print("Using Pydantic v1 schema")
                     schema = output_type.schema()
+                
+                print(f"Schema from model: {json.dumps(schema, indent=2)}")
                 
                 # Create grammar from schema
                 schema_str = json.dumps(schema)
-                grammar = LlamaGrammar.from_json_schema(schema_str)
+                print("Creating grammar from schema...")
+                try:
+                    grammar = LlamaGrammar.from_json_schema(schema_str)
+                    print("Grammar created successfully")
+                except Exception as grammar_err:
+                    print(f"Grammar creation error: {type(grammar_err).__name__}: {str(grammar_err)}")
+                    raise
+                
+                print("===== END DEBUG: CREATING GRAMMAR =====\n")
                 
                 # Generate with grammar
-                result = model(
-                    formatted_prompt,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    repeat_penalty=repeat_penalty,
-                    grammar=grammar
-                )
+                print("\n===== DEBUG: GENERATION WITH GRAMMAR =====")
+                print("Calling model with grammar...")
+                try:
+                    result = model(
+                        formatted_prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        repeat_penalty=repeat_penalty,
+                        grammar=grammar
+                    )
+                    print("Generation with grammar completed successfully")
+                except Exception as gen_err:
+                    print(f"Generation error: {type(gen_err).__name__}: {str(gen_err)}")
+                    raise
+                print("===== END DEBUG: GENERATION WITH GRAMMAR =====\n")
+                
             except (ImportError, AttributeError) as e:
                 # Fall back to regular generation if grammar not supported
+                print(f"\n===== DEBUG: GRAMMAR NOT SUPPORTED =====")
+                print(f"Error: {type(e).__name__}: {str(e)}")
                 logger.warning(f"Grammar-based generation not available: {str(e)}. Falling back to standard generation.")
-                result = model(
-                    formatted_prompt,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    repeat_penalty=repeat_penalty
-                )
+                
+                print("Falling back to standard generation without grammar...")
+                try:
+                    result = model(
+                        formatted_prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        repeat_penalty=repeat_penalty
+                    )
+                    print("Standard generation completed successfully")
+                except Exception as gen_err:
+                    print(f"Standard generation error: {type(gen_err).__name__}: {str(gen_err)}")
+                    raise
+                print("===== END DEBUG: STANDARD GENERATION =====\n")
             
             # Extract generated text
             if isinstance(result, dict) and "choices" in result:

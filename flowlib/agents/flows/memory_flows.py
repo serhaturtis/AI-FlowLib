@@ -13,7 +13,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, ValidationError
 
 import flowlib as fl
-from flowlib.core.errors import ExecutionError, ErrorContext
+from flowlib.core.errors import ExecutionError, ErrorContext, ResourceError
 from flowlib.core.registry.constants import ProviderType, ResourceType
 from flowlib.flows.decorators import flow, pipeline
 from flowlib.core.models.result import FlowResult
@@ -46,6 +46,26 @@ class ConversationInput(BaseModel):
     source: Optional[str] = Field(
         default="conversation",
         description="Source identifier for extracted entities"
+    )
+
+class SearchQueryResult(BaseModel):
+    """Model for search query generation results.
+    
+    Attributes:
+        query: The generated search query
+    """
+    query: str = Field(
+        description="Generated search query based on conversation context"
+    )
+
+class EntityExtractionResult(BaseModel):
+    """Model for entity extraction results.
+    
+    Attributes:
+        entities: List of extracted entities
+    """
+    entities: List[Dict[str, Any]] = Field(
+        description="List of extracted entities with their attributes and relationships"
     )
 
 class EntityRetrievalQuery(BaseModel):
@@ -120,7 +140,7 @@ class RetrievedMemories(BaseModel):
 
 # --- Flow Implementations ---
 
-@flow(name="memory-extraction")
+@flow(name="memory-extraction", is_infrastructure=True)
 class MemoryExtractionFlow(Flow):
     """Flow for extracting entities from conversations and storing in memory.
     
@@ -142,14 +162,14 @@ class MemoryExtractionFlow(Flow):
         self.llm_provider_name = llm_provider_name
     
     @pipeline(input_model=ConversationInput, output_model=ExtractedEntities)
-    async def run(self, context_or_data: Union[Context, ConversationInput]) -> FlowResult[ExtractedEntities]:
+    async def run(self, context_or_data: Union[Context, ConversationInput]) -> ExtractedEntities:
         """Extract entities from conversation history.
         
         Args:
             context_or_data: Context with conversation data or direct input
             
         Returns:
-            FlowResult with extracted entities
+            ExtractedEntities with entities and summary
             
         Raises:
             ExecutionError: If entity extraction fails
@@ -192,15 +212,47 @@ class MemoryExtractionFlow(Flow):
                 self.llm_provider_name
             )
             
-            # Generate entities using the LLM
+            # Generate entities using the LLM with structured output
             logger.info("Extracting entities from conversation with LLM")
-            extracted_data = await llm.generate_text(
-                formatted_prompt,
-                **extraction_prompt.config
-            )
+            try:
+                print("\n===== DEBUG: MEMORY EXTRACTION LLM CALL =====")
+                print(f"Formatted prompt (first 100 chars): {formatted_prompt[:100]}...")
+                print(f"LLM provider: {self.llm_provider_name}")
+                print(f"Output type: {EntityExtractionResult}")
+                print("Calling generate_structured...")
+                
+                raw_result = await llm.generate_structured(
+                    formatted_prompt,
+                    output_type=EntityExtractionResult,
+                    model_name="default",
+                    **extraction_prompt.config
+                )
+                
+                print("\n===== DEBUG: RAW LLM RESULT =====")
+                print(f"Result type: {type(raw_result)}")
+                print(f"Result attributes: {dir(raw_result)}")
+                print(f"Result as string: {str(raw_result)}")
+                if hasattr(raw_result, "entities"):
+                    print(f"Entities type: {type(raw_result.entities)}")
+                    print(f"Number of entities: {len(raw_result.entities)}")
+                    if raw_result.entities:
+                        print(f"First entity (sample): {raw_result.entities[0]}")
+                else:
+                    print("No 'entities' attribute found in result")
+                
+                result = raw_result
+            except Exception as e:
+                print("\n===== DEBUG: LLM CALL EXCEPTION =====")
+                print(f"Exception type: {type(e)}")
+                print(f"Exception message: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                raise
             
-            # Extract JSON data from the response
-            entity_data = self._extract_json_data(extracted_data)
+            # Process the extracted entities
+            print("\n===== DEBUG: PROCESSING ENTITIES =====")
+            entity_data = {"entities": result.entities}
+            print(f"Entity data: {entity_data}")
             
             # Convert to entity objects
             entities = []
@@ -215,17 +267,20 @@ class MemoryExtractionFlow(Flow):
                     entity = self._create_entity_from_data(item, data.source)
                     if entity:
                         entities.append(entity)
-                        
+                        print(f"Created valid entity: {entity.id} of type {entity.type}")
                 except ValidationError as e:
                     logger.warning(f"Invalid entity data: {e}")
                     
-            # Create result with summary
-            result = ExtractedEntities(
+            # Create and return the result object directly
+            print(f"\n===== DEBUG: FINAL RESULT =====")
+            print(f"Total valid entities created: {len(entities)}")
+            result_obj = ExtractedEntities(
                 entities=entities,
                 summary=f"Extracted {len(entities)} entities from conversation"
             )
-            
-            return FlowResult.success(result)
+            print(f"Result object: {result_obj}")
+            print("===== END DEBUG =====\n")
+            return result_obj
             
         except Exception as e:
             raise ExecutionError(
@@ -297,6 +352,9 @@ class MemoryExtractionFlow(Flow):
             Entity object or None if invalid
         """
         try:
+            # Print the incoming entity data for debugging
+            print(f"Creating entity from data: {item}")
+            
             # Create attributes
             attributes = []
             for attr in item.get("attributes", []):
@@ -305,10 +363,42 @@ class MemoryExtractionFlow(Flow):
                         EntityAttribute(
                             name=attr["name"],
                             value=attr["value"],
-                            confidence=attr.get("confidence", 0.8)
+                            confidence=attr.get("confidence", 0.8),
+                            source=source
                         )
                     )
             
+            # Always add the name as an attribute if provided
+            if item.get("name"):
+                # Check if a name attribute already exists
+                has_name_attr = any(a.name == "name" for a in attributes)
+                if not has_name_attr:
+                    attributes.append(
+                        EntityAttribute(
+                            name="name",
+                            value=item["name"],
+                            confidence=item.get("confidence", 0.8),
+                            source=source
+                        )
+                    )
+                    
+                # Also add a "description" attribute as fallback to ensure we have at least one attribute
+                has_desc_attr = any(a.name == "description" for a in attributes)
+                if not has_desc_attr:
+                    attributes.append(
+                        EntityAttribute(
+                            name="description",
+                            value=f"A {item['entity_type']} named {item['name']}",
+                            confidence=item.get("confidence", 0.7),
+                            source=source
+                        )
+                    )
+            
+            # Skip entity ONLY if it has no name AND no attributes
+            if not attributes and not item.get("name"):
+                logger.warning(f"Skipping entity with no attributes or name: {item}")
+                return None
+                
             # Create relationships
             relationships = []
             for rel in item.get("relationships", []):
@@ -317,8 +407,8 @@ class MemoryExtractionFlow(Flow):
                         EntityRelationship(
                             relation_type=rel["relation_type"],
                             target_entity=rel["target_entity"],
-                            target_entity_type=rel.get("target_entity_type"),
-                            confidence=rel.get("confidence", 0.7)
+                            confidence=rel.get("confidence", 0.7),
+                            source=source
                         )
                     )
             
@@ -331,7 +421,7 @@ class MemoryExtractionFlow(Flow):
                 )
             else:
                 entity_id = normalize_entity_id(entity_id)
-                
+            
             # Create entity
             entity = Entity(
                 id=entity_id,
@@ -348,29 +438,27 @@ class MemoryExtractionFlow(Flow):
                 entity.attributes[attr.name] = attr
                 
             # Add relationships to the entity
-            for rel in relationships:
-                # Convert to the correct relationship format
-                entity_rel = EntityRelationship(
-                    relation_type=rel.relation_type,
-                    target_id=rel.target_entity,
-                    confidence=rel.confidence,
-                    source=source
-                )
-                entity.relationships.append(entity_rel)
+            entity.relationships = relationships
+            
+            # Debug pre-validation
+            print(f"Entity before validation: id={entity.id}, type={entity.type}, attributes={len(entity.attributes)}, relationships={len(entity.relationships)}")
             
             # Validate entity
             is_valid, error_messages = validate_entity(entity)
             if not is_valid:
+                print(f"VALIDATION ERRORS for entity {entity.id}: {error_messages}")
                 logger.warning(f"Invalid entity: {error_messages}")
                 return None
                 
+            # Debug successful validation
+            print(f"Entity validation SUCCESS for {entity.id}")
             return entity
             
         except ValidationError as e:
             logger.warning(f"Failed to create entity: {e}")
             return None
 
-@flow(name="memory-retrieval")
+@flow(name="memory-retrieval", is_infrastructure=True)
 class MemoryRetrievalFlow(Flow):
     """Flow for retrieving relevant memories based on conversation context.
     
@@ -401,14 +489,14 @@ class MemoryRetrievalFlow(Flow):
         self.max_entities = max_entities
     
     @pipeline(input_model=MemorySearchInput, output_model=RetrievedMemories)
-    async def run(self, context_or_data: Union[Context, MemorySearchInput]) -> FlowResult[RetrievedMemories]:
+    async def run(self, context_or_data: Union[Context, MemorySearchInput]) -> RetrievedMemories:
         """Retrieve relevant memories based on context.
         
         Args:
             context_or_data: Context or input data
             
         Returns:
-            FlowResult with retrieved memories
+            RetrievedMemories with entities and formatted context
             
         Raises:
             ExecutionError: If memory retrieval fails
@@ -468,14 +556,12 @@ class MemoryRetrievalFlow(Flow):
                     )
                 )
                 
-            # Format retrieved memories
-            result = RetrievedMemories(
+            # Format retrieved memories and return the model directly
+            return RetrievedMemories(
                 entities=search_result.entities,
                 context=search_result.context,
                 relevance_scores=search_result.relevance_scores
             )
-            
-            return FlowResult.success(result)
             
         except Exception as e:
             raise ExecutionError(
@@ -496,51 +582,105 @@ class MemoryRetrievalFlow(Flow):
         Returns:
             Generated search query
         """
+        print("\n===== DEBUG: MEMORY RETRIEVAL QUERY GENERATION =====")
+        print(f"Conversation history length: {len(conversation.conversation_history)}")
+        if conversation.latest_message:
+            print(f"Latest message: {conversation.latest_message.get('content', '')}")
+        
         try:
             # Get retrieval prompt from resource registry
-            retrieval_prompt = await fl.resource_registry.get(
-                "memory-retrieval", 
-                ResourceType.PROMPT
-            )
-            
-            # Format the conversation for the prompt
-            formatted_conversation = []
-            for message in conversation.conversation_history[-5:]:  # Last 5 messages
-                speaker = message.get("speaker", "Unknown")
-                content = message.get("content", "")
-                formatted_conversation.append(f"{speaker}: {content}")
+            try:
+                retrieval_prompt = await fl.resource_registry.get(
+                    "memory-retrieval", 
+                    ResourceType.PROMPT
+                )
+                print(f"Retrieved prompt template 'memory-retrieval'")
                 
-            conversation_text = "\n".join(formatted_conversation)
-            
-            # Format the prompt
-            formatted_prompt = retrieval_prompt.template.format(
-                conversation=conversation_text
-            )
-            
-            # Get LLM
-            llm = await fl.provider_registry.get(
-                ProviderType.LLM, 
-                self.llm_provider_name
-            )
-            
-            # Generate query
-            query = await llm.generate_text(
-                formatted_prompt,
-                **retrieval_prompt.config
-            )
-            
-            return query.strip()
-            
+                # Format the conversation for the prompt
+                formatted_conversation = []
+                for message in conversation.conversation_history[-5:]:  # Last 5 messages
+                    speaker = message.get("speaker", "Unknown")
+                    content = message.get("content", "")
+                    formatted_conversation.append(f"{speaker}: {content}")
+                    
+                conversation_text = "\n".join(formatted_conversation)
+                print(f"Formatted conversation (first 100 chars): {conversation_text[:100]}...")
+                
+                # Format the prompt
+                formatted_prompt = retrieval_prompt.template.format(
+                    conversation=conversation_text
+                )
+                print(f"Formatted prompt (first 100 chars): {formatted_prompt[:100]}...")
+                
+                # Get LLM
+                llm = await fl.provider_registry.get(
+                    ProviderType.LLM, 
+                    self.llm_provider_name
+                )
+                print(f"Retrieved LLM provider: {self.llm_provider_name}")
+                
+                # Generate query using generate_structured with required parameters
+                print("Calling generate_structured for query generation...")
+                try:
+                    result = await llm.generate_structured(
+                        formatted_prompt,
+                        output_type=SearchQueryResult,
+                        model_name="default",
+                        **retrieval_prompt.config
+                    )
+                    
+                    print(f"Result type: {type(result)}")
+                    print(f"Result dir: {dir(result)}")
+                    if hasattr(result, 'query'):
+                        print(f"Generated query: {result.query}")
+                        query = result.query.strip()
+                    else:
+                        print("No 'query' attribute in result")
+                        query = ""
+                        
+                except Exception as gen_err:
+                    print(f"Query generation error: {type(gen_err).__name__}: {str(gen_err)}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                
+                print(f"Final query: {query}")
+                print("===== END DEBUG: QUERY GENERATION =====\n")
+                return query
+                
+            except ResourceError as e:
+                # Handle missing prompt template
+                print(f"Resource error: {str(e)}")
+                logger.warning(f"Failed to get memory-retrieval prompt from resource registry: {e}")
+                logger.info("Using fallback method for query generation")
+                
+                # Fallback: use the last message content or summarize recent messages
+                fallback_query = ""
+                if conversation.latest_message:
+                    fallback_query = conversation.latest_message.get("content", "")
+                elif conversation.conversation_history:
+                    # Take the most recent messages
+                    recent_content = [msg.get("content", "") for msg in conversation.conversation_history[-3:]]
+                    fallback_query = " ".join(recent_content)
+                
+                print(f"Using fallback query: {fallback_query}")
+                print("===== END DEBUG: QUERY GENERATION (FALLBACK) =====\n")
+                return fallback_query
+                
         except Exception as e:
-            logger.warning(f"Failed to generate search query: {e}")
+            print(f"Unexpected error: {type(e).__name__}: {str(e)}")
+            logger.warning(f"Failed to generate search query: {str(e)}")
             
             # Fallback: use the last message as the query
+            fallback_query = ""
             if conversation.latest_message:
-                return conversation.latest_message.get("content", "")
+                fallback_query = conversation.latest_message.get("content", "")
             elif conversation.conversation_history:
-                return conversation.conversation_history[-1].get("content", "")
-            else:
-                return ""
+                fallback_query = conversation.conversation_history[-1].get("content", "")
+            
+            print(f"Using emergency fallback query: {fallback_query}")
+            print("===== END DEBUG: QUERY GENERATION (EMERGENCY FALLBACK) =====\n")
+            return fallback_query
     
     async def _get_memory_manager(self):
         """Get the memory manager instance.

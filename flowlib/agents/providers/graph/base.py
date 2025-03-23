@@ -80,19 +80,19 @@ class GraphDBProvider(Provider[GraphDBProviderSettings]):
         
     @abstractmethod
     async def add_relationship(
-        self, 
-        source_id: str, 
-        target_id: str, 
-        relation_type: str, 
-        properties: Optional[Dict[str, Any]] = None
+        self,
+        source_id: str,
+        target_entity: str,
+        relation_type: str,
+        properties: Dict[str, Any] = {}
     ) -> None:
-        """Add a relationship between entities.
+        """Add a relationship between two entities.
         
         Args:
             source_id: ID of the source entity
-            target_id: ID of the target entity
+            target_entity: Name or identifier of the target entity
             relation_type: Type of relationship
-            properties: Optional properties for the relationship
+            properties: Properties for the relationship
             
         Raises:
             ProviderError: If relationship creation fails
@@ -241,3 +241,22 @@ class GraphDBProvider(Provider[GraphDBProviderSettings]):
             entity_id = await self.add_entity(entity)
             entity_ids.append(entity_id)
         return entity_ids 
+
+    @abstractmethod
+    async def remove_relationship(
+        self,
+        source_id: str,
+        target_entity: str,
+        relation_type: str
+    ) -> None:
+        """Remove a relationship between two entities.
+        
+        Args:
+            source_id: ID of the source entity
+            target_entity: Name or identifier of the target entity
+            relation_type: Type of relationship
+            
+        Raises:
+            ProviderError: If relationship removal fails
+        """
+        pass 

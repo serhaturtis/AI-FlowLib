@@ -273,22 +273,8 @@ class WebConversationProvider(ConversationProvider):
             reflection = latest_reflection.get("reflection", "No reflection available")
             
             formatted["reflection"] = {
-                "text": reflection[:400] + "..." if len(reflection) > 400 else reflection,
-                "new_information": []
+                "text": reflection[:400] + "..." if len(reflection) > 400 else reflection
             }
-            
-            # Handle new information (could contain complex objects)
-            new_info = latest_reflection.get("new_information", [])
-            for info in new_info[:5]:
-                try:
-                    # Try to convert to serializable form
-                    formatted["reflection"]["new_information"].append(
-                        make_serializable(info)
-                    )
-                except Exception as e:
-                    # Fallback to string representation
-                    logger.warning(f"Error serializing information: {e}")
-                    formatted["reflection"]["new_information"].append(str(info))
             
         return formatted
         
@@ -479,21 +465,6 @@ class WebConversationProvider(ConversationProvider):
                 <div class="details-subtitle">Latest Reflection</div>
                 <div>${details.reflection.text}</div>
             `;
-            
-            if (details.reflection.new_information && details.reflection.new_information.length > 0) {
-                const newInfo = document.createElement('div');
-                newInfo.innerHTML = `<div class="details-label">New Information:</div>`;
-                
-                const list = document.createElement('ul');
-                details.reflection.new_information.forEach(info => {
-                    const item = document.createElement('li');
-                    item.textContent = info;
-                    list.appendChild(item);
-                });
-                
-                newInfo.appendChild(list);
-                reflection.appendChild(newInfo);
-            }
             
             executionDetails.appendChild(reflection);
         }

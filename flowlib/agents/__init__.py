@@ -33,7 +33,10 @@ from .discovery import FlowDiscovery
 from .full import FullConversationalAgent
 
 # Import prompts to ensure that decorated prompts are registered
-from . import prompts
+from . import prompts  # Keep this temporarily until we remove prompts.py
+
+# Import the new prompts package
+from flowlib.agents import prompts as agent_prompts
 
 __all__ = [
     # Base agent components

@@ -20,7 +20,7 @@ class EntityAttribute(BaseModel):
 class EntityRelationship(BaseModel):
     """A relationship between entities."""
     relation_type: str = Field(..., description="Type of relationship (e.g., 'friend_of')")
-    target_id: str = Field(..., description="ID of the target entity")
+    target_entity: str = Field(..., description="Name or identifier of the target entity")
     confidence: float = Field(0.9, ge=0.0, le=1.0, description="Confidence in this relationship")
     source: str = Field("conversation", description="Source of this relationship")
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), 
@@ -59,7 +59,7 @@ class Entity(BaseModel):
                 "importance": self.importance,
                 "source": attr.source,
                 "tags": self.tags,
-                "relationships": [{"type": r.relation_type, "target": r.target_id} for r in self.relationships],
+                "relationships": [{"type": r.relation_type, "target": r.target_entity} for r in self.relationships],
                 "timestamp": attr.timestamp
             }
         else:
@@ -73,7 +73,7 @@ class Entity(BaseModel):
                 "importance": self.importance,
                 "source": "system",
                 "tags": self.tags,
-                "relationships": [{"type": r.relation_type, "target": r.target_id} for r in self.relationships],
+                "relationships": [{"type": r.relation_type, "target": r.target_entity} for r in self.relationships],
                 "timestamp": self.last_updated
             }
     
@@ -95,7 +95,7 @@ class Entity(BaseModel):
         if self.relationships:
             lines.append("Relationships:")
             for rel in self.relationships:
-                lines.append(f"  {rel.relation_type} {rel.target_id} (confidence: {rel.confidence:.2f})")
+                lines.append(f"  {rel.relation_type} {rel.target_entity} (confidence: {rel.confidence:.2f})")
         
         # Add tags
         if self.tags:

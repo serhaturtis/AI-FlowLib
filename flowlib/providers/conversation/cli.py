@@ -56,7 +56,35 @@ class CLIConversationProvider(ConversationProvider):
     
     async def send_response(self, response: str):
         """Print response to console."""
-        print(f"\nAgent: {response}")
+        # Process the response to replace literal escape sequences
+        processed_response = self._process_escape_sequences(response)
+        print(f"\nAgent: {processed_response}")
+    
+    def _process_escape_sequences(self, text: str) -> str:
+        """Process any literal escape sequences in the text.
+        
+        This method replaces literal escape sequences like '\\n' with
+        their actual character representation.
+        
+        Args:
+            text: Text to process
+            
+        Returns:
+            Processed text with proper escape sequences
+        """
+        import re
+        
+        # Replace common literal escape sequences with their character representation
+        # Start with double backslashes (\\n) as they may appear in JSON strings
+        text = text.replace('\\\\n', '\n')
+        text = text.replace('\\n', '\n')
+        text = text.replace('\\t', '\t')
+        text = text.replace('\\r', '\r')
+        
+        # Handle unicode escape sequences like \u00A0
+        text = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), text)
+        
+        return text
     
     async def show_details(self, details: Dict[str, Any]):
         """Display execution details in console."""
@@ -89,21 +117,23 @@ class CLIConversationProvider(ConversationProvider):
         if planning_entries:
             latest_plan = planning_entries[-1]
             print("\n📋 Planning:")
-            print(f"  Reasoning: {latest_plan.get('reasoning', 'No reasoning')[:100]}...")
-            print(f"  Selected flow: {latest_plan.get('flow', 'No flow selected')}")
+            reasoning = self._process_escape_sequences(latest_plan.get('reasoning', 'No reasoning')[:100])
+            print(f"  Reasoning: {reasoning}...")
+            flow = self._process_escape_sequences(latest_plan.get('flow', 'No flow selected'))
+            print(f"  Selected flow: {flow}")
         
         # Show execution information
         print("\n⚙️ Recent Executions:")
         for i, execution in enumerate(execution_history[-3:]):
-            action = execution.get("action", "unknown")
-            flow = execution.get("flow", "unknown")
+            action = self._process_escape_sequences(execution.get("action", "unknown"))
+            flow = self._process_escape_sequences(execution.get("flow", "unknown"))
             print(f"  {i+1}. Action: {action}, Flow: {flow}")
         
         # Show reflection information
         reflection_entries = [e for e in execution_history if e.get("action") == "reflect"]
         if reflection_entries:
             latest_reflection = reflection_entries[-1]
-            reflection = latest_reflection.get("reflection", "No reflection available")
+            reflection = self._process_escape_sequences(latest_reflection.get("reflection", "No reflection available"))
             
             print("\n🔍 Latest Reflection:")
             reflection_lines = reflection.split('\n')
@@ -113,13 +143,26 @@ class CLIConversationProvider(ConversationProvider):
             if len(reflection_lines) > 3:
                 print("  - ...")
             
-            # Show new information
-            new_info = latest_reflection.get("new_information", [])
-            if new_info:
-                print("\n💡 New Information:")
-                for info in new_info[:3]:
-                    print(f"  - {info}")
-                if len(new_info) > 3:
-                    print(f"  - ... ({len(new_info) - 3} more items)")
+            # New information handling has been removed as it's now handled by memory extraction flow
         
-        print("-----------------------------") 
+        print("-----------------------------")
+    
+    async def handle_error(self, error: Exception) -> str:
+        """Handle errors during conversation.
+        
+        Args:
+            error: The exception that occurred
+            
+        Returns:
+            Error message to display to the user
+        """
+        # Get the error message from the base implementation
+        error_message = await super().handle_error(error)
+        
+        # Process the error message to replace escape sequences
+        processed_message = self._process_escape_sequences(error_message)
+        
+        # Print the processed error message
+        print(f"\nError: {processed_message}")
+        
+        return error_message 

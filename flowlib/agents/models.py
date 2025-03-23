@@ -30,7 +30,6 @@ class ReflectionResponse(BaseModel):
     progress: int = Field(0, ge=0, le=100, description="Estimated progress toward task completion (0-100)")
     is_complete: bool = Field(False, description="Whether the task is complete")
     completion_reason: Optional[str] = Field(None, description="Reason for task completion if complete")
-    new_information: List[MemoryItem] = Field(default_factory=list, description="Structured new information to remember")
 
 class AgentState(BaseModel):
     """State of the agent during execution."""

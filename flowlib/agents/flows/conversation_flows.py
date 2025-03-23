@@ -87,7 +87,7 @@ class ReflectionInput(BaseModel):
     model_name: str = Field("default", description="Model name to use for reflection")
 
 
-@fl.flow(name="agent-planning-flow")
+@fl.flow(name="agent-planning-flow", is_infrastructure=True)
 class AgentPlanningFlow:
     """Flow for agent planning decisions."""
     
@@ -231,7 +231,7 @@ Step {i}:
         return result.data
 
 
-@fl.flow(name="agent-input-generation-flow")
+@fl.flow(name="agent-input-generation-flow", is_infrastructure=True)
 class AgentInputGenerationFlow:
     """Flow for generating inputs for a selected flow."""
     
@@ -309,14 +309,14 @@ class AgentInputGenerationFlow:
         return result.data
 
 
-@fl.flow(name="agent-reflection-flow")
+@fl.flow(name="agent-reflection-flow", is_infrastructure=True)
 class AgentReflectionFlow:
-    """Flow for reflection on agent actions and their outcomes."""
+    """Flow for agent reflection on executed flows."""
     
     # Add schema definitions directly to flow class
     input_schema = ReflectionInput
     output_schema = ReflectionResponse
-    description = "A flow that analyzes the outcome of an action, identifies new information, and determines task progress."
+    description = "A flow that reflects on the outputs of executed flows and extracts insights and learnings."
     
     @fl.stage(input_model=ReflectionInput, output_model=ReflectionResponse)
     async def reflect(self, context: fl.Context) -> ReflectionResponse:
@@ -397,55 +397,6 @@ class AgentReflectionFlow:
                     result.is_complete = True
                     result.progress = 100
                     result.completion_reason = "User message has been processed and a response was generated."
-                    
-                    # Ensure new information includes the conversation content
-                    try:
-                        print("\n===== CHECKING FOR CONVERSATION INFO =====")
-                        if not result.new_information:
-                            print("No memory items found, adding default conversation info")
-                            result.new_information = []
-                            
-                            # Extract user message and response from task
-                            user_msg = input_data.task_description.split("'")[1] if "'" in input_data.task_description else "unknown message"
-                            agent_response = str(input_data.flow_outputs)
-                            
-                            # Check the current state of new_information
-                            print(f"Current new_information type: {type(result.new_information)}")
-                            print(f"Current new_information: {result.new_information}")
-                            
-                            # Create MemoryItem objects for user message and agent response
-                            user_memory_item = MemoryItem(
-                                key="user_message",
-                                value=user_msg,
-                                relevant_keys=["conversation"],
-                                importance=0.8,
-                                source="conversation",
-                                context="User's initial message"
-                            )
-                            
-                            agent_memory_item = MemoryItem(
-                                key="agent_response",
-                                value=agent_response,
-                                relevant_keys=["conversation"],
-                                importance=0.7,
-                                source="conversation",
-                                context="Agent's response to user"
-                            )
-                            
-                            # Only add default conversation items if no factual memory items were found
-                            print("Adding user message to new_information")
-                            result.new_information.append(user_memory_item)
-                                
-                            print("Adding agent response to new_information")
-                            result.new_information.append(agent_memory_item)
-                            
-                            print(f"Updated new_information: {result.new_information}")
-                        else:
-                            print(f"Found {len(result.new_information)} factual memory items, skipping default conversation info")
-                        print("===== CONVERSATION INFO CHECK COMPLETE =====\n")
-                    except Exception as e:
-                        logger.warning(f"Error adding conversation info to reflection: {e}")
-                        print(f"\n===== ERROR ADDING CONVERSATION INFO =====\n{str(e)}\n{type(e).__name__}\n=====\n")
             
             # Log the decision about task completion
             logger.info(f"Reflection on flow '{input_data.flow_name}' - Is task complete: {result.is_complete}")
@@ -460,9 +411,6 @@ class AgentReflectionFlow:
             print(f"Progress: {result.progress}")
             print(f"Is complete: {result.is_complete}")
             print(f"Completion reason: {result.completion_reason}")
-            print(f"New information count: {len(result.new_information)}")
-            for i, info in enumerate(result.new_information):
-                print(f"  Item {i+1}: {info}")
             print("===== END REFLECTION RESULT =====\n")
             
             return result
@@ -483,8 +431,7 @@ class AgentReflectionFlow:
                 reflection=f"Error generating reflection: {str(e)}",
                 progress=input_data.current_state.get("progress", 0),
                 is_complete=False,
-                completion_reason=None,
-                new_information=[]
+                completion_reason=None
             )
     
     def _format_state(self, state: Dict[str, Any]) -> str:

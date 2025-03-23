@@ -144,6 +144,9 @@ class Agent:
             print("Initializing hybrid memory")
             await self.hybrid_memory.initialize()
             print("Hybrid memory initialized")
+            
+            # Initialize memory flows with the hybrid memory manager
+            self._initialize_memory_flows()
         
         # Create standard memory contexts
         print("Creating memory contexts")
@@ -178,6 +181,13 @@ class Agent:
                 print(f"    Type: {type(flow_instance)}")
                 methods = [method for method in dir(flow_instance) if not method.startswith('_') and callable(getattr(flow_instance, method))]
                 print(f"    Methods: {methods}")
+                
+                # Check if memory flows have a memory manager
+                if flow_name in ["memory-retrieval"]:
+                    has_manager = hasattr(flow_instance, "hybrid_memory_manager") and flow_instance.hybrid_memory_manager is not None
+                    print(f"    Has memory manager: {has_manager}")
+                    if not has_manager and self.use_hybrid_memory:
+                        print(f"    WARNING: {flow_name} doesn't have a memory manager!")
 
         logger.info(f"Initialized agent with {len(self.flows)} flows")
         print("===== END AGENT INITIALIZATION DEBUGGING =====\n")
@@ -230,8 +240,58 @@ class Agent:
                 self._register_flow(flow)
                 logger.info(f"Discovered flow from directory scan: {name}")
                 
+        # Special handling for memory flows
+        if self.use_hybrid_memory:
+            # Reinitialize memory flows with the hybrid memory manager
+            self._initialize_memory_flows()
+                
         print(f"Final self.flows: {list(self.flows.keys())}")
         print("===== END FLOW DISCOVERY DEBUGGING =====\n")
+            
+    def _initialize_memory_flows(self):
+        """Initialize memory flows with the hybrid memory manager.
+        
+        This ensures that memory-related flows have access to the memory manager.
+        """
+        if not self.use_hybrid_memory or not self.hybrid_memory:
+            logger.info("Hybrid memory not enabled or not initialized - skipping memory flow initialization")
+            return
+            
+        print("Initializing memory flows with hybrid memory manager")
+        
+        # Reinitialize memory-retrieval flow with the memory manager
+        if "memory-retrieval" in self.flows:
+            print("Reinitializing memory-retrieval flow with hybrid memory manager")
+            # Import the flow class
+            try:
+                from .flows.memory_flows import MemoryRetrievalFlow
+                # Create a new instance with the hybrid memory manager
+                retrieval_flow = MemoryRetrievalFlow(
+                    hybrid_memory_manager=self.hybrid_memory,
+                    name_or_instance="memory-retrieval"
+                )
+                # Replace the existing flow
+                self.flows["memory-retrieval"] = retrieval_flow
+                print("Successfully initialized memory-retrieval flow with hybrid memory manager")
+            except ImportError as e:
+                logger.error(f"Failed to import MemoryRetrievalFlow: {str(e)}")
+                print(f"Import error when reinitializing memory-retrieval: {str(e)}")
+        else:
+            print("memory-retrieval flow not found in registered flows")
+            
+        # Similarly for memory-extraction if needed
+        if "memory-extraction" in self.flows:
+            print("Reinitializing memory-extraction flow")
+            try:
+                from .flows.memory_flows import MemoryExtractionFlow
+                extraction_flow = MemoryExtractionFlow(
+                    name_or_instance="memory-extraction"
+                )
+                self.flows["memory-extraction"] = extraction_flow
+                print("Successfully initialized memory-extraction flow")
+            except ImportError as e:
+                logger.error(f"Failed to import MemoryExtractionFlow: {str(e)}")
+                print(f"Import error when reinitializing memory-extraction: {str(e)}")
             
     async def initialize_provider(self):
         """Initialize the LLM provider asynchronously.
@@ -521,18 +581,6 @@ class Agent:
                     else:
                         logger.info(f"Reflection did not mark task as complete - continuing execution loop")
                     
-                    # Store new information in long-term memory
-                    print("Checking new information")
-                    for info in reflection.new_information:
-                        print(f"{info.key}: {info.value}")
-                        await self.memory.remember(
-                            content=info.value,
-                            context=self.task_context,
-                            source=f"{info.source or 'flow:' + flow_name}",
-                            importance=info.importance,
-                            metadata={"key": info.key, "relevant_keys": info.relevant_keys, "context": info.context}
-                        )
-                    
                 except Exception as e:
                     logger.error(f"Error during step execution: {str(e)}")
                     self.state.errors.append(str(e))
@@ -638,8 +686,7 @@ class Agent:
             "action": "reflect",
             "flow": flow_name,
             "reflection": reflection.reflection,
-            "progress": reflection.progress,
-            "new_information": reflection.new_information
+            "progress": reflection.progress
         })
         
         # Update progress
@@ -659,6 +706,13 @@ class Agent:
         Returns:
             Planning response
         """
+        # Known infrastructure flow names (for backward compatibility)
+        INFRASTRUCTURE_FLOW_NAMES = [
+            "memory-extraction", "memory-retrieval", 
+            "agent-planning-flow", "agent-input-generation-flow", 
+            "agent-reflection-flow"
+        ]
+        
         # Refresh flow schemas before planning
         print("\n===== REFRESHING FLOW SCHEMAS BEFORE PLANNING =====")
         for flow_name, flow in self.flows.items():
@@ -726,8 +780,28 @@ class Agent:
                 )
         print("===== SCHEMA REFRESH COMPLETE =====\n")
         
-        # Get flows for planning
-        available_flows = [self.flow_descriptions[name].dict() if hasattr(self.flow_descriptions[name], 'dict') else self.flow_descriptions[name].model_dump() for name in self.flows]
+        # Get flows for planning - FILTER OUT INFRASTRUCTURE FLOWS
+        available_flows = []
+        print("\n===== FILTERING FLOWS FOR PLANNING =====")
+        for name in self.flows:
+            flow = self.flows[name]
+            # Check if this is an infrastructure flow (by flag or name)
+            is_infra_by_flag = getattr(flow, "is_infrastructure", False)
+            is_infra_by_name = name in INFRASTRUCTURE_FLOW_NAMES
+            
+            if is_infra_by_flag or is_infra_by_name:
+                print(f"  Filtering out infrastructure flow: {name}")
+                continue
+                
+            # Add non-infrastructure flow to available list
+            flow_desc = self.flow_descriptions[name]
+            if hasattr(flow_desc, 'dict'):
+                available_flows.append(flow_desc.dict())
+            else:
+                available_flows.append(flow_desc.model_dump())
+            print(f"  Including application flow: {name}")
+        print(f"  Total flows available for planning: {len(available_flows)}/{len(self.flows)}")
+        print("===== END FLOW FILTERING =====\n")
         
         # Debug: print the flow descriptions
         print("\n===== FLOW DESCRIPTIONS PASSED TO PLANNING =====")
@@ -1039,7 +1113,7 @@ class Agent:
             print("Importing RetrievedMemories (hybrid memory not enabled branch)")
             from .flows.memory_flows import RetrievedMemories
             print(f"RetrievedMemories type: {type(RetrievedMemories)}")
-            result = RetrievedMemories(entities=[], formatted_context="", query_used="")
+            result = RetrievedMemories(entities=[], context="", relevance_scores={})
             print(f"Created empty RetrievedMemories result: {result}")
             print("===== END DEBUGGING RETRIEVE_MEMORIES =====\n")
             return result
@@ -1050,7 +1124,7 @@ class Agent:
             # Lazy import to avoid circular dependency
             print("Importing RetrievedMemories (flow not available branch)")
             from .flows.memory_flows import RetrievedMemories
-            result = RetrievedMemories(entities=[], formatted_context="", query_used="")
+            result = RetrievedMemories(entities=[], context="", relevance_scores={})
             print(f"Created empty RetrievedMemories result: {result}")
             print("===== END DEBUGGING RETRIEVE_MEMORIES =====\n")
             return result
@@ -1061,6 +1135,23 @@ class Agent:
         print("Getting memory-retrieval flow")
         flow = self.flows["memory-retrieval"]
         print(f"Flow type: {type(flow)}")
+        
+        # Ensure the flow has access to the memory manager
+        print("Checking if flow has hybrid_memory_manager")
+        if not hasattr(flow, "hybrid_memory_manager") or flow.hybrid_memory_manager is None:
+            print("Flow doesn't have hybrid_memory_manager, creating a new flow instance")
+            # Import the flow class
+            from .flows.memory_flows import MemoryRetrievalFlow
+            # Create a new instance with the hybrid memory manager
+            flow = MemoryRetrievalFlow(
+                hybrid_memory_manager=self.hybrid_memory,
+                name_or_instance="memory-retrieval"
+            )
+            # Update the flows dictionary
+            self.flows["memory-retrieval"] = flow
+            print("Created new flow instance with hybrid_memory_manager")
+        else:
+            print(f"Flow already has hybrid_memory_manager: {flow.hybrid_memory_manager}")
         
         # Create input for memory retrieval
         # Lazy import to avoid circular dependency
@@ -1080,10 +1171,21 @@ class Agent:
         print("Executing memory-retrieval flow")
         try:
             result = await flow.execute(context)
-            print(f"Flow execution result: {result}")
-            print(f"result.data: {result.data}")
+            print(f"Flow execution result type: {type(result)}")
+            
+            # Handle result - which could be either a FlowResult or a RetrievedMemories directly
+            if hasattr(result, "data") and hasattr(result, "is_success"):
+                # It's a FlowResult
+                print("Result is a FlowResult, extracting data")
+                result_data = result.data
+            else:
+                # It's already the model
+                print("Result is already a RetrievedMemories model")
+                result_data = result
+                
+            print(f"Result data: {result_data}")
             print("===== END DEBUGGING RETRIEVE_MEMORIES =====\n")
-            return result.data
+            return result_data
         except Exception as e:
             print(f"Error executing memory-retrieval flow: {str(e)}")
             print(f"Error type: {type(e).__name__}")
@@ -1107,33 +1209,85 @@ class Agent:
         Raises:
             FlowError: If memory extraction fails
         """
+        print("\n===== DEBUG: EXTRACT_AND_STORE_MEMORIES =====")
+        print(f"Conversation history length: {len(conversation.conversation_history)}")
+        if conversation.latest_message:
+            print(f"Latest message: {conversation.latest_message}")
+        
         if not self.use_hybrid_memory:
             logger.warning("Hybrid memory not enabled. Use Agent(use_hybrid_memory=True) to enable.")
             # Lazy import to avoid circular dependency
             from .flows.memory_flows import ExtractedEntities
-            return ExtractedEntities(entities=[], raw_extraction="")
+            print("Hybrid memory not enabled, returning empty ExtractedEntities")
+            return ExtractedEntities(entities=[], summary="")
             
         if "memory-extraction" not in self.flows:
             logger.warning("MemoryExtractionFlow not available")
             # Lazy import to avoid circular dependency
             from .flows.memory_flows import ExtractedEntities
-            return ExtractedEntities(entities=[], raw_extraction="")
+            print("MemoryExtractionFlow not available, returning empty ExtractedEntities")
+            return ExtractedEntities(entities=[], summary="")
             
         logger.info("Extracting and storing memories from conversation")
+        print("Using memory-extraction flow to extract entities")
         
         # Use the memory-extraction flow
         flow = self.flows["memory-extraction"]
+        print(f"Flow instance: {flow}")
         
-        # Execute memory extraction flow
-        context = Context(data=conversation)
-        extraction_result = await flow.execute(context)
-        
-        # Get extracted entities
-        extracted_entities = extraction_result.data
-        
-        # Store entities in memory
-        if extracted_entities.entities:
-            logger.info(f"Storing {len(extracted_entities.entities)} extracted entities in memory")
-            await self.hybrid_memory.store_entities(extracted_entities.entities)
-        
-        return extracted_entities
+        try:
+            # Execute memory extraction flow
+            context = Context(data=conversation)
+            print("Executing memory extraction flow...")
+            extraction_result = await flow.execute(context)
+            
+            print("\n===== DEBUG: EXTRACTION RESULT =====")
+            print(f"Extraction result type: {type(extraction_result)}")
+            print(f"Extraction result attributes: {dir(extraction_result)}")
+            
+            # Handle result - which could be either a FlowResult or a ExtractedEntities directly
+            if hasattr(extraction_result, "data") and hasattr(extraction_result, "is_success"):
+                # It's a FlowResult
+                print("Result is a FlowResult object")
+                extracted_entities = extraction_result.data
+                print(f"Extracted entities from FlowResult.data, type: {type(extracted_entities)}")
+            else:
+                # It's already the model
+                print("Result is already the ExtractedEntities model")
+                extracted_entities = extraction_result
+                print(f"Direct extracted entities, type: {type(extracted_entities)}")
+            
+            print(f"Extracted entities: {extracted_entities}")
+            if hasattr(extracted_entities, "entities"):
+                print(f"Number of entities: {len(extracted_entities.entities)}")
+                for i, entity in enumerate(extracted_entities.entities):
+                    print(f"Entity {i+1}: ID={entity.id}, Type={entity.type}")
+            
+            # Store entities in memory
+            if extracted_entities.entities:
+                print(f"\n===== DEBUG: STORING ENTITIES IN MEMORY =====")
+                logger.info(f"Storing {len(extracted_entities.entities)} extracted entities in memory")
+                print(f"Calling hybrid_memory.store_entities with {len(extracted_entities.entities)} entities")
+                try:
+                    await self.hybrid_memory.store_entities(extracted_entities.entities)
+                    print("Successfully stored entities in memory")
+                except Exception as storage_err:
+                    print(f"Error storing entities: {type(storage_err).__name__}: {str(storage_err)}")
+                    print("Entity storage failed, but continuing with extraction result")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("No entities to store")
+            
+            print("===== END DEBUG: EXTRACT_AND_STORE_MEMORIES =====\n")
+            return extracted_entities
+            
+        except Exception as e:
+            print(f"\n===== DEBUG: EXTRACTION ERROR =====")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            print("===== END DEBUG: EXTRACT_AND_STORE_MEMORIES (ERROR) =====\n")
+            # Re-raise to be caught by caller
+            raise

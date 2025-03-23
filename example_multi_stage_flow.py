@@ -84,15 +84,7 @@ class InformationExtractionPrompt:
     2. Key facts stated in the text
     3. Main topics discussed
     
-    Format your response as a JSON object with the following structure:
-    {{
-        "entities": [
-            {{"type": "person|organization|location|product", "value": "entity name"}},
-            ...
-        ],
-        "key_facts": ["fact 1", "fact 2", ...],
-        "topics": ["topic 1", "topic 2", ...]
-    }}
+
     """
 
 @fl.prompt("sentiment-analysis")
