@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 from ...flows.base import Flow
-from flowlib.new_agent.learn.models import (
+from flowlib.agent.learn.models import (
     LearningRequest,
     LearningResponse,
     LearningStrategy,

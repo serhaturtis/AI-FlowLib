@@ -24,7 +24,7 @@ from ...flows.base import Flow
 from ...flows.registry import stage_registry, StageRegistry
 from ...flows.results import FlowResult
 
-from flowlib.new_agent.learn.models import LearningRequest, LearningResponse, LearningStrategy, Entity, Relationship
+from flowlib.agent.learn.models import LearningRequest, LearningResponse, LearningStrategy, Entity, Relationship
 
 from ..persistence.factory import create_state_persister
 
