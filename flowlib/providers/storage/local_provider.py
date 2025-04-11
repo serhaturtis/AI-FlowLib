@@ -6,20 +6,17 @@ for local filesystem storage operations.
 
 import logging
 import os
-import io
 import shutil
-import asyncio
-from typing import Any, Dict, List, Optional, Type, TypeVar, BinaryIO, Tuple, Union
-from datetime import datetime
 import mimetypes
 import hashlib
 import pathlib
-
-from pydantic import Field, validator
+from typing import Dict, List, Optional, BinaryIO, Tuple, Union
+from datetime import datetime
+from pydantic import field_validator
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.registry.decorators import provider
-from ...core.registry.constants import ProviderType
+from ..decorators import provider
+from ..constants import ProviderType
 from .base import StorageProvider, StorageProviderSettings, FileMetadata
 
 logger = logging.getLogger(__name__)
@@ -41,7 +38,7 @@ class LocalStorageProviderSettings(StorageProviderSettings):
     use_relative_paths: bool = True
     permissions: Optional[int] = None
     
-    @validator('base_path')
+    @field_validator('base_path')
     def validate_base_path(cls, v):
         """Validate that base_path is absolute and normalized."""
         base_path = os.path.abspath(os.path.normpath(v))

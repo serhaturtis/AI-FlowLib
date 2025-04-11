@@ -5,13 +5,12 @@ that share common functionality for publishing and consuming messages.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Union, Callable
-import asyncio
-from pydantic import BaseModel, Field
+from typing import Any, Dict, Optional, Type, TypeVar, Generic, Callable
+from pydantic import BaseModel
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
 from ..base import Provider
+from ..base import ProviderSettings
 
 logger = logging.getLogger(__name__)
 

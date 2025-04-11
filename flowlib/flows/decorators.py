@@ -4,20 +4,17 @@ This module provides a set of decorators that simplify the creation of flows,
 stages, and pipelines with improved type safety and error handling.
 """
 
-import inspect
 import functools
 import logging
 import datetime
 import types
-from functools import wraps
-from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union, cast, get_type_hints, List
+from typing import Any, Callable, Dict, Optional, Type, TypeVar, List
 from pydantic import BaseModel
 
-from ..core.models.context import Context
-from ..core.errors import ValidationError, ErrorContext
 from .registry import stage_registry
 from .stage import Stage
 from .standalone import StandaloneStage
+from .base import Flow
 
 F = TypeVar('F', bound=Callable)
 C = TypeVar('C', bound=type)
@@ -25,27 +22,37 @@ C = TypeVar('C', bound=type)
 # Setup logging
 logger = logging.getLogger(__name__)
 
-def flow(cls=None, *, name: str = None, is_infrastructure: bool = False):
+def flow(cls=None, *, name: str = None, description: str, is_infrastructure: bool = False):
     """
     Decorator to mark a class as a flow.
     
-    This decorator registers a class as a flow in the stage registry, makes the class
-    inherit from the Flow base class if it doesn't already, and adds flow-specific
-    methods to the class. It enforces that each flow has exactly one pipeline method.
+    This decorator registers a class as a flow in the stage registry and enforces
+    that the class implements the required Flow interface.
     
     Args:
         cls: The class to decorate
         name: Optional custom name for the flow
-        is_infrastructure: Whether this is an infrastructure flow (not selectable during planning)
+        description: Description of the flow's purpose (required)
+        is_infrastructure: Whether this is an infrastructure flow
         
     Returns:
         The decorated flow class
+        
+    Raises:
+        ValueError: If description is not provided
     """
     def wrap(cls):
-        # Import Flow class here to avoid circular import
-        from .base import Flow
+        # Create a get_description method that returns the provided description
+        def get_description(self):
+            return description
         
-        # Check if the class already inherits from Flow
+        # Add the method to the class
+        if not hasattr(cls, 'get_description'):
+            setattr(cls, 'get_description', get_description)
+            logger.debug(f"Added get_description method to flow class '{cls.__name__}'")
+        
+        # If the class already has a get_description method, we keep it
+            
         if not issubclass(cls, Flow):
             # Create a new class that inherits from both the original class and Flow
             original_cls = cls
@@ -69,41 +76,20 @@ def flow(cls=None, *, name: str = None, is_infrastructure: bool = False):
             
             def new_init(self, *args, **kwargs):
                 # Call Flow's __init__ with appropriate parameters
-                # Get input and output schemas from the pipeline method if available
-                input_schema = None
-                output_schema = None
-                
-                # Find pipeline method to extract schemas
-                for method_name in dir(cls):
-                    method = getattr(cls, method_name)
-                    if hasattr(method, '__pipeline__') and method.__pipeline__:
-                        input_schema = getattr(method, 'input_model', None)
-                        output_schema = getattr(method, 'output_model', None)
-                        break
-                
-                # First argument (name_or_instance) must be passed as positional argument
                 flow_name = name or original_name
-                metadata = getattr(cls, "__flow_metadata__", {})
-                
-                # Call Flow's __init__ directly using the already imported Flow class
-                # No need to import again
                 Flow.__init__(
                     self, 
                     flow_name,  # Positional argument
-                    input_schema=input_schema,
-                    output_schema=output_schema,
-                    metadata=metadata
+                    input_schema=None,  # Will be set from pipeline method
+                    output_schema=None,  # Will be set from pipeline method
+                    metadata={"is_infrastructure": is_infrastructure}
                 )
                 
                 # Only call original_init if it's different from Flow.__init__
-                # This avoids recursive calls
                 if original_init is not Flow.__init__:
-                    # Call the original class's __init__
                     try:
-                        # Call original init with Object.__init__ pattern to avoid super() issues
                         original_cls.__init__(self, *args, **kwargs)
                     except TypeError:
-                        # If original init doesn't take any arguments, call it without args
                         try:
                             original_cls.__init__(self)
                         except Exception as e:
@@ -113,19 +99,18 @@ def flow(cls=None, *, name: str = None, is_infrastructure: bool = False):
         
         # Set flow metadata
         flow_name = name or cls.__name__
-        flow_metadata = getattr(cls, "__flow_metadata__", {})
-        flow_metadata.update({"name": flow_name, "is_infrastructure": is_infrastructure})
-        cls.__flow_metadata__ = flow_metadata
+        cls.__flow_metadata__ = {
+            "name": flow_name,
+            "is_infrastructure": is_infrastructure
+        }
         
         # Set the is_infrastructure flag directly on the class
         cls.is_infrastructure = is_infrastructure
         
         # Create a flow instance to store in the registry
-        # This ensures flow instances are available through the registry
         try:
             flow_instance = cls()
             # Set the name attribute directly on the flow instance
-            # This ensures flow.name returns the decorated name, not the class name
             setattr(flow_instance, "name", flow_name)
             
             # Find pipeline method to extract schemas and set them on the flow instance
@@ -144,12 +129,6 @@ def flow(cls=None, *, name: str = None, is_infrastructure: bool = False):
                     if output_schema:
                         setattr(flow_instance, "output_schema", output_schema)
                         logger.debug(f"Set output_schema={output_schema.__name__} on flow '{flow_name}'")
-                    
-                    # Get description from docstring or metadata
-                    if method.__doc__:
-                        description = method.__doc__.strip().split('\n')[0]
-                        setattr(flow_instance, "description", description)
-                        logger.debug(f"Set description from pipeline docstring on flow '{flow_name}'")
                     
                     break
             
@@ -416,18 +395,11 @@ def pipeline(func: Optional[Callable] = None, **pipeline_kwargs):
                 if len(args) > 0 and hasattr(args[0], "__class__"):
                     flow_class = args[0].__class__.__name__
                     logger.debug(f"Pipeline execution: {flow_class}.{method.__name__} ({execution_time.total_seconds():.3f}s)")
-            
-        # Mark the method as a pipeline with multiple attributes for compatibility
         
         # Modern style - these are the preferred attributes we'll use
         wrapper.__pipeline__ = True
         wrapper.__input_model__ = input_model
         wrapper.__output_model__ = output_model
-        
-        # Legacy style attributes - for backward compatibility
-        wrapper.input_model = input_model
-        wrapper.output_model = output_model
-        wrapper._pipeline = True
         
         return wrapper
         
@@ -457,7 +429,7 @@ def get_stage(self, stage_name: str) -> Stage:
         
     # Initialize stage instances cache if needed
     if not hasattr(self, "__stage_instances__"):
-        self.__stage_instances__: Dict[str, Stage] = {}
+        self.__stage_instances__ = {}
     
     # Return cached stage if available
     if stage_name in self.__stage_instances__:
@@ -519,24 +491,7 @@ def get_stage(self, stage_name: str) -> Stage:
         return stage
         
     except KeyError:
-        # Final fallback - check for method directly on instance with stage attributes
-        if stage_name in dir(self):
-            method = getattr(self, stage_name)
-            if hasattr(method, "__stage_name__"):
-                try:
-                    stage = Stage(
-                        name=method.__stage_name__,
-                        process_fn=method,
-                        input_schema=getattr(method, "__input_model__", None),
-                        output_schema=getattr(method, "__output_model__", None),
-                        metadata=getattr(method, "__stage_metadata__", {})
-                    )
-                    self.__stage_instances__[stage_name] = stage
-                    return stage
-                except Exception as e:
-                    raise ValueError(f"Failed to create stage for method '{stage_name}': {str(e)}")
-        
-        # Stage not found in registry or on instance
+        # Stage not found in registry
         available_stages = stage_registry.get_stages(self.__class__.__name__)
         suggestion = ""
         if available_stages:

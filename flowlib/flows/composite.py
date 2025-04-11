@@ -5,18 +5,20 @@ multiple stages into pipelines with improved flow control, error handling,
 and result propagation.
 """
 
-from typing import Dict, List, Optional, Type, Any, Iterable, Mapping, Sequence, Union
-from pydantic import BaseModel
 import logging
+from pydantic import BaseModel
+from typing import Dict, List, Optional, Type, Any, Iterable
 
-from ..core.models.context import Context
-from ..core.models.result import FlowResult, FlowStatus
+from ..core.context import Context
 from ..core.errors import ExecutionError, ErrorContext
 from .base import Flow
+from .base import FlowStatus
 from .stage import Stage
 from .registry import stage_registry
+from .results import FlowResult
 
 logger = logging.getLogger(__name__)
+
 
 class CompositeFlow(Flow):
     """Enhanced composite flow for multi-stage pipelines.

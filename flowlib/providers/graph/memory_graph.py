@@ -7,15 +7,14 @@ interface for testing and small-scale use cases.
 import asyncio
 import logging
 import copy
-from datetime import datetime
-from typing import Dict, List, Optional, Any, Set, Union
+from typing import Dict, List, Optional, Any, Set
 
 from pydantic import ValidationError
 
-from flowlib.core.errors import ProviderError, ErrorContext
-from flowlib.core.registry.decorators import provider
-from flowlib.core.registry.constants import ProviderType
-from flowlib.agents.memory.models import Entity, EntityAttribute, EntityRelationship
+from ...core.errors import ProviderError, ErrorContext
+from ..decorators import provider
+from ..constants import ProviderType
+from .models import Entity, EntityRelationship
 from .base import GraphDBProvider, GraphDBProviderSettings
 
 logger = logging.getLogger(__name__)
@@ -135,8 +134,8 @@ class MemoryGraphProvider(GraphDBProvider):
         source_id: str,
         target_entity: str,
         relation_type: str,
-        properties: Dict[str, Any] = {}
-    ) -> None:
+        properties: Optional[Dict[str, Any]] = None
+    ):
         """Add a relationship between two entities.
         
         Args:
@@ -155,10 +154,39 @@ class MemoryGraphProvider(GraphDBProvider):
                 provider_name=self.name
             )
             
-        # Check if target entity exists - skip if it doesn't
+        # Check if target entity exists - create it if it doesn't
         if target_entity not in self.entities:
-            logger.warning(f"Skipping relationship creation: Target entity '{target_entity}' does not exist")
-            return
+            # Create a basic placeholder entity
+            from flowlib.agents.memory.models import Entity, EntityAttribute
+            from datetime import datetime
+            
+            logger.info(f"Creating missing target entity '{target_entity}' for relationship")
+            # Create a simple placeholder entity with basic information
+            placeholder_entity = Entity(
+                id=target_entity,
+                type="placeholder",  # Mark as placeholder so it can be updated later
+                attributes={
+                    "name": EntityAttribute(
+                        name="name",
+                        value=target_entity,
+                        confidence=0.8,
+                        source="system"
+                    ),
+                    "description": EntityAttribute(
+                        name="description",
+                        value=f"Automatically created entity for relationship with {source_id}",
+                        confidence=0.8,
+                        source="system"
+                    )
+                },
+                relationships=[],
+                source="system",
+                importance=0.5,
+                last_updated=datetime.now().isoformat()
+            )
+            
+            # Add the entity
+            await self.add_entity(placeholder_entity)
             
         # Initialize relationships for source entity if needed
         if source_id not in self.relationships:

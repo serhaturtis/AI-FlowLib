@@ -6,13 +6,11 @@ vector embeddings with metadata.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Union, Tuple
-import asyncio
-import numpy as np
+from typing import Any, Dict, List, Optional, Type, TypeVar, Generic
 from pydantic import BaseModel, Field
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
+from ..base import ProviderSettings
 from ..base import Provider
 
 logger = logging.getLogger(__name__)

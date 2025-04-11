@@ -7,8 +7,12 @@ using Redis as the backend for distributed caching.
 import logging
 import json
 import pickle
-from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Union
-import asyncio
+from typing import Any, Dict, Optional, Union, List
+
+from ...core.errors import ProviderError, ErrorContext
+from .base import CacheProvider, CacheProviderSettings
+from ..decorators import provider
+from ..constants import ProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +28,6 @@ except ImportError:
     # Define a placeholder for RedisError for type checking
     class RedisError(Exception):
         pass
-
-from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
-from ...core.registry.decorators import provider
-from ...core.registry.constants import ProviderType
-from .base import CacheProvider, CacheProviderSettings
 
 
 class RedisCacheProviderSettings(CacheProviderSettings):

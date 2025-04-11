@@ -6,8 +6,8 @@ This module provides functions for creating and configuring conversation provide
 import logging
 from typing import Optional, Dict, Any, Union, Type
 
-from ...core.registry import provider_registry
-from ...core.registry.constants import ProviderType
+from ..constants import ProviderType
+from ..registry import provider_registry
 from .base import ConversationProvider, ConversationProviderSettings
 from .cli import CLIConversationProviderSettings
 from .web import WebConversationProviderSettings

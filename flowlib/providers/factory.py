@@ -8,7 +8,8 @@ import logging
 from typing import Dict, Type, Any, Optional
 
 from ..core.errors import ProviderError, ErrorContext
-from ..core.registry import provider_registry, ProviderType
+from .constants import ProviderType
+from .registry import provider_registry
 from .base import Provider
 
 logger = logging.getLogger(__name__)
@@ -104,9 +105,6 @@ def create_provider(
                     supported=supported_implementations
                 )
             )
-    else:
-        # Use default provider for the type if no implementation specified
-        provider_class = _get_default_provider(provider_type)
         
     if provider_class is None:
         raise ProviderError(
@@ -190,7 +188,7 @@ async def create_and_initialize_provider(
         )
 
 def _import_provider_class(provider_type: str, implementation: str) -> Type[Provider]:
-    """Dynamically import a provider class by type and implementation.
+    """Import a provider class by type and implementation.
     
     Args:
         provider_type: Type of provider
@@ -202,42 +200,73 @@ def _import_provider_class(provider_type: str, implementation: str) -> Type[Prov
     Raises:
         ImportError: If provider class cannot be imported
     """
-    # Map of provider types and implementations to import paths
-    import_map = {
+    # Map of provider types and implementations to provider classes
+    provider_map = {
         ProviderType.LLM: {
-            "llamacpp": "from ..providers.llm.llama_cpp_provider import LlamaCppProvider; return LlamaCppProvider",
-            "llama": "from ..providers.llm.llama_cpp_provider import LlamaCppProvider; return LlamaCppProvider",
+            "llamacpp": "LlamaCppProvider",
         },
         ProviderType.DATABASE: {
-            "postgres": "from ..providers.db.postgres_provider import PostgreSQLProvider; return PostgreSQLProvider",
-            "postgresql": "from ..providers.db.postgres_provider import PostgreSQLProvider; return PostgreSQLProvider",
-            "mongodb": "from ..providers.db.mongodb_provider import MongoDBProvider; return MongoDBProvider",
-            "mongo": "from ..providers.db.mongodb_provider import MongoDBProvider; return MongoDBProvider",
-            "sqlite": "from ..providers.db.sqlite_provider import SQLiteProvider; return SQLiteProvider",
-            "sqlite3": "from ..providers.db.sqlite_provider import SQLiteProvider; return SQLiteProvider",
+            "postgresql": "PostgreSQLProvider",
+            "mongodb": "MongoDBProvider",
+            "sqlite": "SQLiteProvider",
         },
         ProviderType.VECTOR_DB: {
-            "chroma": "from ..providers.vector.chroma_provider import ChromaDBProvider; return ChromaDBProvider",
-            "chromadb": "from ..providers.vector.chroma_provider import ChromaDBProvider; return ChromaDBProvider",
-            "pinecone": "from ..providers.vector.pinecone_provider import PineconeProvider; return PineconeProvider",
-            "qdrant": "from ..providers.vector.qdrant_provider import QdrantProvider; return QdrantProvider",
+            "chromadb": "ChromaDBProvider",
+            "pinecone": "PineconeProvider",
+            "qdrant": "QdrantProvider",
         },
-        # Add other mappings as needed
     }
     
-    # Get import statement
-    if provider_type in import_map and implementation in import_map[provider_type]:
-        import_statement = import_map[provider_type][implementation]
-        try:
-            # Execute import statement
-            local_vars = {}
-            exec(import_statement, globals(), local_vars)
-            return local_vars["return"]
-        except ImportError as e:
-            logger.error(f"Failed to import provider class for {provider_type}/{implementation}: {str(e)}")
-            raise
+    # Map of provider types to modules
+    module_map = {
+        ProviderType.LLM: "flowlib.providers.llm",
+        ProviderType.DATABASE: "flowlib.providers.db",
+        ProviderType.VECTOR_DB: "flowlib.providers.vector",
+        ProviderType.MESSAGE_QUEUE: "flowlib.providers.mq",
+        ProviderType.CACHE: "flowlib.providers.cache",
+        ProviderType.STORAGE: "flowlib.providers.storage",
+    }
     
-    raise ImportError(f"No import mapping for {provider_type}/{implementation}")
+    # Check if we have a mapping for this provider type and implementation
+    if provider_type not in provider_map or implementation not in provider_map[provider_type]:
+        raise ImportError(f"No provider mapping for {provider_type}/{implementation}")
+    
+    # Get the module path and class name
+    module_path = module_map[provider_type]
+    class_name = provider_map[provider_type][implementation]
+    
+    try:
+        # Use direct imports for each provider type/implementation
+        if provider_type == ProviderType.LLM:
+            if implementation == "llamacpp":
+                from ..providers.llm.llama_cpp_provider import LlamaCppProvider
+                return LlamaCppProvider
+        elif provider_type == ProviderType.DATABASE:
+            if implementation == "postgresql":
+                from ..providers.db.postgres_provider import PostgreSQLProvider
+                return PostgreSQLProvider
+            elif implementation == "mongodb":
+                from ..providers.db.mongodb_provider import MongoDBProvider
+                return MongoDBProvider
+            elif implementation == "sqlite":
+                from ..providers.db.sqlite_provider import SQLiteProvider
+                return SQLiteProvider
+        elif provider_type == ProviderType.VECTOR_DB:
+            if implementation == "chromadb":
+                from ..providers.vector.chroma_provider import ChromaDBProvider
+                return ChromaDBProvider
+            elif implementation == "pinecone":
+                from ..providers.vector.pinecone_provider import PineconeProvider
+                return PineconeProvider
+            elif implementation == "qdrant":
+                from ..providers.vector.qdrant_provider import QdrantProvider
+                return QdrantProvider
+        
+        # If we get here, something went wrong with our mappings
+        raise ImportError(f"Provider import failed for {provider_type}/{implementation}")
+    except ImportError as e:
+        logger.error(f"Failed to import provider class for {provider_type}/{implementation}: {str(e)}")
+        raise
 
 def _import_provider_type(provider_type: str) -> Type[Provider]:
     """Dynamically import a base provider class by type.

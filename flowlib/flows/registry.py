@@ -5,9 +5,12 @@ enabling easy access to stages within flows.
 """
 
 import logging
-from typing import Dict, List, Optional, Any, Union, Set, TypeVar, Generic, Type, cast
+from typing import Dict, List, Optional, Any, Set
+
+from .metadata import FlowMetadata
 
 logger = logging.getLogger(__name__)
+
 
 class StageRegistry:
     """
@@ -28,25 +31,81 @@ class StageRegistry:
         # Set of standalone stage names (not associated with a specific flow)
         self._standalone_stages: Set[str] = set()
         
-        # Store flow instances, not just names (NEW)
+        # Store flow instances
         self._flow_instances: Dict[str, Any] = {}
+        
+        # Store flow metadata
+        self._flow_metadata: Dict[str, FlowMetadata] = {}
     
-    def register_flow(self, flow_name: str, flow_instance: Optional[Any] = None) -> None:
-        """
-        Register a flow in the registry.
+    def register_flow(self, flow_name: str, flow_class_or_instance = None) -> None:
+        """Register a flow with the registry.
         
         Args:
-            flow_name: The name of the flow to register.
-            flow_instance: The actual flow instance (optional).
-        """
-        if flow_name not in self._flow_stages:
-            self._flow_stages[flow_name] = set()
-            logger.debug(f"Registered flow: {flow_name}")
+            flow_name: Flow name
+            flow_class_or_instance: Flow class or instance (optional)
             
-        # Store the flow instance if provided (NEW)
-        if flow_instance is not None:
+        Raises:
+            ValueError: If flow already exists with this name
+        """
+        if flow_name in self._flow_stages and flow_name not in self._standalone_stages:
+            logger.warning(f"Flow '{flow_name}' already exists in registry. Skipping...")
+            return
+        
+        # Register flow name
+        if flow_class_or_instance is None:
+            self._flow_stages[flow_name] = set()
+            self._stage_info[(flow_name, "")] = {
+                "name": "",
+                "is_standalone": True,
+                "metadata": {
+                    "is_infrastructure": False
+                },
+                "stages": {}
+            }
+            self._standalone_stages.add("")
+            logger.debug(f"Registered standalone stage: {flow_name}")
+        else:
+            # Determine if this is a class or instance
+            if isinstance(flow_class_or_instance, type):
+                flow_class = flow_class_or_instance
+                try:
+                    # Try to create an instance
+                    flow_instance = flow_class()
+                except Exception as e:
+                    logger.warning(f"Could not create instance of flow '{flow_name}': {e}")
+                    flow_instance = None
+            else:
+                flow_instance = flow_class_or_instance
+                flow_class = flow_instance.__class__
+            
+            # Get metadata from the instance if possible
+            metadata = {}
+            if hasattr(flow_instance, "__flow_metadata__"):
+                metadata = flow_instance.__flow_metadata__
+            elif hasattr(flow_class, "__flow_metadata__"):
+                metadata = flow_class.__flow_metadata__
+            
+            # Register the flow
+            self._flow_stages[flow_name] = set()
+            self._stage_info[(flow_name, flow_name)] = {
+                "name": flow_name,
+                "is_standalone": False,
+                "metadata": metadata,
+                "stages": {}
+            }
             self._flow_instances[flow_name] = flow_instance
-            logger.debug(f"Stored instance for flow: {flow_name}")
+            
+            # Create and store FlowMetadata for the flow
+            if flow_instance:
+                try:
+                    from .metadata import FlowMetadata
+                    flow_metadata = FlowMetadata.from_flow(flow_instance, flow_name)
+                    self._flow_metadata[flow_name] = flow_metadata
+                    logger.debug(f"Created and stored metadata for flow: {flow_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to create metadata for flow '{flow_name}': {e}")
+            
+            logger.debug(f"Registered flow: {flow_name}")
     
     def register_stage(
         self,
@@ -164,7 +223,27 @@ class StageRegistry:
         """
         return sorted(self._flow_stages.keys())
     
-    # NEW METHOD: Get flow instance by name
+    def get_flow_metadata(self, flow_name: str) -> Optional[FlowMetadata]:
+        """
+        Get flow metadata by name.
+        
+        Args:
+            flow_name: Name of the flow
+            
+        Returns:
+            Flow metadata or None if not found
+        """
+        return self._flow_metadata.get(flow_name)
+    
+    def get_all_flow_metadata(self) -> Dict[str, FlowMetadata]:
+        """
+        Get metadata for all registered flows.
+        
+        Returns:
+            Dictionary mapping flow names to their metadata
+        """
+        return self._flow_metadata.copy()
+    
     def get_flow(self, flow_name: str) -> Optional[Any]:
         """
         Get a flow instance by name.
@@ -182,7 +261,6 @@ class StageRegistry:
             logger.debug(f"No flow instance found for: {flow_name}")
         return flow_instance
     
-    # NEW METHOD: List all available flow instances
     def get_flow_instances(self) -> Dict[str, Any]:
         """
         Get all registered flow instances.
@@ -197,7 +275,8 @@ class StageRegistry:
         self._flow_stages.clear()
         self._stage_info.clear()
         self._standalone_stages.clear()
-        self._flow_instances.clear()  # NEW: Clear flow instances
+        self._flow_instances.clear()
+        self._flow_metadata.clear()
         logger.debug("Cleared stage registry")
 
 

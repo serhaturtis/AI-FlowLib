@@ -13,7 +13,6 @@ from datetime import datetime, date
 from pydantic import Field
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
 from .base import DBProvider, DBProviderSettings
 
 logger = logging.getLogger(__name__)

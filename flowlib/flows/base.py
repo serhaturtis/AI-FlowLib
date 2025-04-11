@@ -4,23 +4,136 @@ This module provides the foundation for all flow components with
 enhanced result handling and error management.
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from datetime import datetime
 import inspect
-from typing import Optional, Dict, Any, Type, Union, TypeVar, Generic, get_type_hints
-from pydantic import BaseModel
+from enum import Enum
+from typing import Optional, Dict, Any, Type, Union, TypeVar, Generic, List
+from pydantic import BaseModel, Field, field_validator
 
-from ..core.models.context import Context
-from ..core.models.result import FlowResult, FlowStatus
-from ..core.errors import (
-    BaseError,
-    ValidationError,
-    ExecutionError,
-    ErrorContext,
-    ErrorManager,
-    default_manager
-)
-from ..core.validation import validate_data
+from ..core.context import Context
+from ..core.errors import ValidationError
+from ..core.errors import ErrorManager, default_manager, ErrorContext, BaseError, ExecutionError
+from .results import FlowResult
+from .constants import FlowStatus
+
+#T = TypeVar('T', bound='BaseModel')
+    
+
+class FlowSettings(BaseModel):
+    """Settings for configuring flow execution behavior.
+    
+    This class provides:
+    1. Timeout configuration for flow execution
+    2. Retry behavior for handling transient errors
+    3. Logging and debugging options
+    4. Resource management settings
+    """
+    
+    # Execution settings
+    timeout_seconds: Optional[float] = None
+    max_retries: int = 0
+    retry_delay_seconds: float = 1.0
+    
+    # Validation settings
+    validate_inputs: bool = True
+    validate_outputs: bool = True
+    
+    # Logging settings
+    log_level: str = "INFO"
+    debug_mode: bool = False
+    
+    # Resource settings
+    max_memory_mb: Optional[int] = None
+    max_cpu_percent: Optional[int] = None
+    
+    # Advanced settings
+    custom_settings: Dict[str, Any] = Field(default_factory=dict)
+    
+    @field_validator("log_level")
+    def validate_log_level(cls, v: str) -> str:
+        """Validate log level."""
+        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if v.upper() not in valid_levels:
+            raise ValueError(f"Log level must be one of {valid_levels}")
+        return v.upper()
+    
+    @field_validator("max_retries")
+    def validate_max_retries(cls, v: int) -> int:
+        """Validate max retries."""
+        if v < 0:
+            raise ValueError("Max retries must be non-negative")
+        return v
+    
+    @field_validator("retry_delay_seconds")
+    def validate_retry_delay(cls, v: float) -> float:
+        """Validate retry delay."""
+        if v < 0:
+            raise ValueError("Retry delay must be non-negative")
+        return v
+    
+    def merge(self, other: Union['FlowSettings', Dict[str, Any]]) -> 'FlowSettings':
+        """Merge with another settings object or dictionary.
+        
+        Args:
+            other: Settings object or dictionary to merge with
+            
+        Returns:
+            New merged settings object
+        """
+        if isinstance(other, FlowSettings):
+            # Convert to dictionary
+            other_dict = other.model_dump()
+        elif isinstance(other, dict):
+            # Convert dict to settings
+            other_dict = other
+        else:
+            raise TypeError(f"Cannot merge with {type(other)}")
+        
+        # Create a copy of self as dictionary
+        merged_dict = self.model_dump()
+        
+        # Update with other dict, handling nested custom_settings specially
+        for key, value in other_dict.items():
+            if key == "custom_settings" and value:
+                # Create a new dict that is a copy of the current custom_settings
+                if "custom_settings" not in merged_dict:
+                    merged_dict["custom_settings"] = {}
+                merged_dict["custom_settings"].update(value)
+            else:
+                merged_dict[key] = value
+                
+        return FlowSettings.model_validate(merged_dict)
+    
+    @classmethod
+    def from_dict(cls, settings_dict: Dict[str, Any]) -> 'FlowSettings':
+        """Create settings from dictionary.
+        
+        Args:
+            settings_dict: Dictionary of settings
+            
+        Returns:
+            Settings object
+        """
+        return cls.model_validate(settings_dict)
+    
+    def update(self, **kwargs) -> 'FlowSettings':
+        """Create a new settings object with updated values.
+        
+        Args:
+            **kwargs: New values to set
+            
+        Returns:
+            New settings object
+        """
+        settings_dict = self.model_dump()
+        settings_dict.update(kwargs)
+        return FlowSettings.model_validate(settings_dict)
+    
+    def __str__(self) -> str:
+        """String representation."""
+        timeout_str = f"{self.timeout_seconds}s" if self.timeout_seconds else "None"
+        return f"FlowSettings(timeout={timeout_str}, retries={self.max_retries}, debug={self.debug_mode})"
 
 T = TypeVar('T')
 
@@ -53,12 +166,6 @@ class Flow(ABC, Generic[T]):
         Raises:
             ValueError: If input_schema or output_schema is provided but not a Pydantic BaseModel subclass.
         """
-        # Validate input_schema and output_schema are Pydantic models if provided
-        if input_schema is not None and not (isinstance(input_schema, type) and issubclass(input_schema, BaseModel)):
-            raise ValueError(f"Flow input_schema must be a Pydantic BaseModel subclass, got {input_schema}")
-        
-        if output_schema is not None and not (isinstance(output_schema, type) and issubclass(output_schema, BaseModel)):
-            raise ValueError(f"Flow output_schema must be a Pydantic BaseModel subclass, got {output_schema}")
             
         if isinstance(name_or_instance, str):
             self.name = name_or_instance
@@ -134,15 +241,31 @@ class Flow(ABC, Generic[T]):
         # Fall back to the flow's output_schema attribute
         return self.output_schema
     
-    def get_pipeline_method(self) -> Optional[callable]:
+    def get_pipeline_method(self) -> Optional[Any]:
         """Get the pipeline method for this flow.
         
         Returns:
             The pipeline method or None if not found
         """
-        pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
-        if pipeline_method_name:
-            return getattr(self, pipeline_method_name, None)
+        # Find the pipeline method
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if hasattr(attr, '__pipeline__') and attr.__pipeline__:
+                return attr
+        return None
+
+    @classmethod
+    def get_pipeline_method_cls(cls) -> Optional[Any]:
+        """Get the pipeline method for this flow class.
+        
+        Returns:
+            The pipeline method or None if not found
+        """
+        # Find the pipeline method
+        for attr_name in dir(cls):
+            attr = getattr(cls, attr_name)
+            if hasattr(attr, '__pipeline__') and attr.__pipeline__:
+                return attr
         return None
     
     async def execute(self, context: Context) -> FlowResult:
@@ -175,143 +298,127 @@ class Flow(ABC, Generic[T]):
                     error_context = error_context.add(input_data=input_data)
                     self._validate_input(input_data)
 
-                # Execute the flow's pipeline method
-                # Determine the right method to call based on the class type
+
+                # This is a decorated @flow class, call the pipeline method directly
+                pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
                 
-                if hasattr(self, 'flow_instance') and self.flow_instance and self.pipeline_method:
-                    # Legacy pattern - Flow instance (not a decorated class), use self._execute
-                    result = await self._execute(context)
-                else:
-                    # This is a decorated @flow class, call the pipeline method directly
-                    pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
+                if not pipeline_method_name:
+                    raise ExecutionError(
+                        "No pipeline method found on flow. Each flow must have exactly one @pipeline method.",
+                        error_context
+                    )
+                
+                # Get the pipeline method
+                pipeline_method = getattr(self, pipeline_method_name)
+                if not pipeline_method:
+                    raise ExecutionError(
+                        f"Pipeline method '{pipeline_method_name}' not found in flow class.",
+                        error_context
+                    )
+                
+                # Add debug output
+                print("="*50)
+                print(f"DEBUG: Pipeline method name: {pipeline_method_name}")
+                print(f"DEBUG: Pipeline method: {pipeline_method}")
+                print(f"DEBUG: Pipeline method type: {type(pipeline_method)}")
+                print(f"DEBUG: Pipeline method dir: {dir(pipeline_method)}")
+                
+                # Execute the pipeline function
+                try:
+                    pipeline_args = {}
+                    pipeline_sig = inspect.signature(pipeline_method)
+                    print(f"DEBUG: Pipeline signature: {pipeline_sig}")
                     
-                    if not pipeline_method_name:
-                        raise ExecutionError(
-                            "No pipeline method found on flow. Each flow must have exactly one @pipeline method.",
-                            error_context
-                        )
+                    # Check if the pipeline expects a context parameter
+                    if 'context' in pipeline_sig.parameters:
+                        pipeline_args['context'] = context
+                        print(f"DEBUG: Added context to pipeline_args")
+                    elif 'ctx' in pipeline_sig.parameters:
+                        pipeline_args['ctx'] = context
+                        print(f"DEBUG: Added ctx to pipeline_args")
                     
-                    # Get the pipeline method
-                    pipeline_method = getattr(self, pipeline_method_name)
-                    if not pipeline_method:
-                        raise ExecutionError(
-                            f"Pipeline method '{pipeline_method_name}' not found in flow class.",
-                            error_context
-                        )
+                    # Handle differently based on input parameters for the pipeline
+                    print(f"DEBUG: Pipeline parameters length: {len(pipeline_sig.parameters)}")
+                    # Dump each parameter
+                    for param_name, param in pipeline_sig.parameters.items():
+                        print(f"DEBUG: Parameter '{param_name}': {param}")
                     
-                    # Add debug output
-                    print("="*50)
-                    print(f"DEBUG: Pipeline method name: {pipeline_method_name}")
-                    print(f"DEBUG: Pipeline method: {pipeline_method}")
-                    print(f"DEBUG: Pipeline method type: {type(pipeline_method)}")
-                    print(f"DEBUG: Pipeline method dir: {dir(pipeline_method)}")
-                    
-                    # Execute the pipeline function
-                    try:
-                        pipeline_args = {}
-                        pipeline_sig = inspect.signature(pipeline_method)
-                        print(f"DEBUG: Pipeline signature: {pipeline_sig}")
+                    # Handle differently based on input parameters for the pipeline
+                    # For a bound method, the signature doesn't include 'self',
+                    # but we need to handle it as if it does when calling the method
+                    # If there's at least one parameter, we should pass input_data
+                    if pipeline_sig.parameters:
+                        # Get input data
+                        input_data = context.data
                         
-                        # Check if the pipeline expects a context parameter
-                        if 'context' in pipeline_sig.parameters:
-                            pipeline_args['context'] = context
-                            print(f"DEBUG: Added context to pipeline_args")
-                        elif 'ctx' in pipeline_sig.parameters:
-                            pipeline_args['ctx'] = context
-                            print(f"DEBUG: Added ctx to pipeline_args")
+                        # Debug logging
+                        print(f"DEBUG: Pipeline method: {pipeline_method.__name__}")
+                        print(f"DEBUG: Pipeline parameters: {pipeline_sig.parameters}")
+                        print(f"DEBUG: Context data type: {type(input_data)}")
                         
-                        # Handle differently based on input parameters for the pipeline
-                        print(f"DEBUG: Pipeline parameters length: {len(pipeline_sig.parameters)}")
-                        # Dump each parameter
-                        for param_name, param in pipeline_sig.parameters.items():
-                            print(f"DEBUG: Parameter '{param_name}': {param}")
-                        
-                        # Handle differently based on input parameters for the pipeline
-                        # For a bound method, the signature doesn't include 'self',
-                        # but we need to handle it as if it does when calling the method
-                        # If there's at least one parameter, we should pass input_data
-                        if pipeline_sig.parameters:
-                            # Get input data
-                            input_data = context.data
-                            
-                            # Debug logging
-                            print(f"DEBUG: Pipeline method: {pipeline_method.__name__}")
-                            print(f"DEBUG: Pipeline parameters: {pipeline_sig.parameters}")
-                            print(f"DEBUG: Context data type: {type(input_data)}")
-                            
-                            # Validate input data against input_schema if set
-                            if getattr(pipeline_method, '__input_model__', None):
-                                input_model = pipeline_method.__input_model__
-                                print(f"DEBUG: Expected input model: {input_model}")
-                                # Input data must be an instance of the expected model
-                                if not isinstance(input_data, input_model):
-                                    raise ValidationError(
-                                        f"Pipeline input must be an instance of {input_model.__name__}, got {type(input_data).__name__}"
-                                    )
-                            
-                            # Get the parameter names
-                            param_names = list(pipeline_sig.parameters.keys())
-                            print(f"DEBUG: Parameter names: {param_names}")
-                            print(f"DEBUG: Pipeline args: {pipeline_args}")
-                            
-                            # For methods, the first parameter is for input data
-                            first_param = param_names[0] if param_names else None 
-                            if first_param:
-                                print(f"DEBUG: First parameter: {first_param}")
-                                
-                                # If the first parameter is 'context' or 'ctx', we shouldn't pass input_data as first arg
-                                if first_param in ['context', 'ctx']:
-                                    print("DEBUG: Calling pipeline_method with kwargs only (first param is context/ctx)")
-                                    pipeline_result = await pipeline_method(**pipeline_args)
-                                else:
-                                    # Pass input_data as the first positional argument
-                                    print("DEBUG: Calling pipeline_method with input_data as first arg")
-                                    pipeline_result = await pipeline_method(input_data, **pipeline_args)
-                            else:
-                                # No parameters, don't pass input_data
-                                print("DEBUG: Calling pipeline_method with no args")
-                                pipeline_result = await pipeline_method(**pipeline_args)
-                        else:
-                            # No parameters at all
-                            print("DEBUG: Calling pipeline_method with no args (no parameters)")
-                            pipeline_result = await pipeline_method(**pipeline_args)
-                        
-                        # Validate result type against output_schema if defined
-                        output_model = getattr(pipeline_method, '__output_model__', None)
-                        if output_model is not None:
-                            if not isinstance(pipeline_result, output_model):
+                        # Validate input data against input_schema if set
+                        if getattr(pipeline_method, '__input_model__', None):
+                            input_model = pipeline_method.__input_model__
+                            print(f"DEBUG: Expected input model: {input_model}")
+                            # Input data must be an instance of the expected model
+                            if not isinstance(input_data, input_model):
                                 raise ValidationError(
-                                    f"Pipeline '{pipeline_method.__name__}' must return an instance of {output_model.__name__}, got {type(pipeline_result).__name__}"
+                                    f"Pipeline input must be an instance of {input_model.__name__}, got {type(input_data).__name__}"
                                 )
                         
-                        # Convert result to FlowResult
-                        if isinstance(pipeline_result, FlowResult):
-                            result = pipeline_result
-                        elif isinstance(pipeline_result, BaseModel):
-                            # For Pydantic models, store the model directly instead of converting to dict
-                            # This ensures we maintain the Pydantic model instance throughout the pipeline
-                            result = FlowResult(
-                                data=pipeline_result,  # Store the model directly
-                                original_type=type(pipeline_result),
-                                flow_name=self.name,
-                                status=FlowStatus.SUCCESS
-                            )
-                        else:
-                            # For non-Pydantic model results, error out as this violates the strict model rule
-                            raise ValidationError(
-                                f"Pipeline must return a Pydantic model (found {type(pipeline_result).__name__}). Non-model return types are not allowed."
-                            )
+                        # Get the parameter names
+                        param_names = list(pipeline_sig.parameters.keys())
+                        print(f"DEBUG: Parameter names: {param_names}")
+                        print(f"DEBUG: Pipeline args: {pipeline_args}")
+                        
+                        # For methods, the first parameter is for input data
+                        first_param = param_names[0] if param_names else None 
+                        if first_param:
+                            print(f"DEBUG: First parameter: {first_param}")
                             
-                    except ValidationError:
-                        # Reraise validation errors
-                        raise
-                    except Exception as e:
-                        # Convert other errors to ExecutionError
-                        raise ExecutionError(
-                            message=f"Pipeline execution failed: {str(e)}",
-                            context=error_context,
-                            cause=e
-                        )
+                            # If the first parameter is 'context' or 'ctx', we shouldn't pass input_data as first arg
+                            if first_param in ['context', 'ctx']:
+                                print("DEBUG: Calling pipeline_method with kwargs only (first param is context/ctx)")
+                                pipeline_result = await pipeline_method(**pipeline_args)
+                            else:
+                                # Pass input_data as the first positional argument
+                                print("DEBUG: Calling pipeline_method with input_data as first arg")
+                                pipeline_result = await pipeline_method(input_data, **pipeline_args)
+                        else:
+                            # No parameters, don't pass input_data
+                            print("DEBUG: Calling pipeline_method with no args")
+                            pipeline_result = await pipeline_method(**pipeline_args)
+                    else:
+                        # No parameters at all
+                        print("DEBUG: Calling pipeline_method with no args (no parameters)")
+                        pipeline_result = await pipeline_method(**pipeline_args)
+                    
+                    # Validate result type against output_schema if defined
+                    output_model = getattr(pipeline_method, '__output_model__', None)
+                    if output_model is not None:
+                        if not isinstance(pipeline_result, output_model):
+                            raise ValidationError(
+                                f"Pipeline '{pipeline_method.__name__}' must return an instance of {output_model.__name__}, got {type(pipeline_result).__name__}"
+                            )
+                    
+                    
+                    result = FlowResult(
+                        data=pipeline_result,  # Store the model directly
+                        original_type=type(pipeline_result),
+                        flow_name=self.name,
+                        status=FlowStatus.SUCCESS
+                    )
+
+                except ValidationError:
+                    # Reraise validation errors
+                    raise
+                except Exception as e:
+                    # Convert other errors to ExecutionError
+                    raise ExecutionError(
+                        message=f"Pipeline execution failed: {str(e)}",
+                        context=error_context,
+                        cause=e
+                    )
 
                 # Validate output if schema exists
                 if self.output_schema and result.data:
@@ -511,7 +618,7 @@ class Flow(ABC, Generic[T]):
                 if isinstance(result, BaseModel):
                     # For Pydantic models
                     return FlowResult(
-                        data=result.dict(),
+                        data=result.model_dump(),
                         original_type=type(result),
                         flow_name=self.name,
                         status=FlowStatus.SUCCESS
@@ -557,4 +664,19 @@ class Flow(ABC, Generic[T]):
 
     def __str__(self) -> str:
         """String representation."""
-        return f"Flow(name='{self.name}')" 
+        return f"Flow(name='{self.name}')"
+    
+    def get_description(self) -> str:
+        """
+        Get the flow description.
+        
+        This method is automatically added by the @flow decorator.
+        
+        Returns:
+            Flow description
+        """
+        # This method is always implemented by the decorator
+        # No need to raise NotImplementedError
+        return ""
+
+    

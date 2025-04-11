@@ -8,8 +8,7 @@ import logging
 from abc import abstractmethod
 from typing import Optional, Dict, Any, TypeVar, Generic
 
-from ...core.models import Context
-from ...core.models.settings import FlowSettings
+from ...flows.base import FlowSettings
 from ...core.errors import ExecutionError
 from ..base import Provider
 

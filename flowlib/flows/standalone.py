@@ -4,18 +4,16 @@ This module provides enhanced functionality for creating standalone stages
 that can be easily imported, composed, and reused across different flows.
 """
 
-import inspect
 import functools
-from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union, get_type_hints, cast
-from pydantic import BaseModel, create_model
+from typing import Any, Callable, Dict, Optional, Type, TypeVar
+from pydantic import BaseModel
 
-from ..core.models.context import Context
-from ..core.models.result import FlowResult
 from .stage import Stage
 from .registry import stage_registry
 
 T = TypeVar('T')
 F = TypeVar('F', bound=Callable)
+
 
 class StandaloneStage:
     """Enhanced standalone stage wrapper for reusable flow components.
@@ -101,14 +99,6 @@ class StandaloneStage:
             output_schema=self.output_model,
             metadata=self.metadata
         )
-    
-    def to_flow(self) -> Stage:
-        """Convert to a flow component (maintained for backward compatibility).
-        
-        Returns:
-            Stage instance configured with this standalone stage's function
-        """
-        return self.to_stage()
     
     @classmethod
     def create(

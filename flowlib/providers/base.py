@@ -6,15 +6,89 @@ configuration, initialization, and error handling.
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Type, TypeVar, Generic, List, Union, Callable
+from typing import Any, Dict, Optional, TypeVar, Generic, List, Union, Callable
+from pydantic import BaseModel, Field
 import logging
 
-from ..core.models.settings import FlowSettings
 from ..core.errors import ResourceError, ErrorContext
+from ..flows.base import FlowSettings
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T', bound=FlowSettings)
+
+class ProviderSettings(BaseModel):
+    """Base settings for providers.
+    
+    This class provides:
+    1. Common configuration for all providers
+    2. Authentication settings
+    3. Rate limiting and throttling options
+    """
+    
+    # Authentication settings
+    api_key: Optional[str] = None
+    api_base: Optional[str] = None
+    
+    # Rate limiting
+    requests_per_minute: Optional[int] = None
+    max_concurrent_requests: Optional[int] = None
+    
+    # Timeout settings
+    timeout_seconds: float = 60.0
+    
+    # Retry settings
+    max_retries: int = 3
+    retry_delay_seconds: float = 1.0
+    
+    # Logging settings
+    log_requests: bool = False
+    log_responses: bool = False
+    
+    # Advanced settings
+    custom_settings: Dict[str, Any] = Field(default_factory=dict)
+    
+    def merge(self, other: Union['ProviderSettings', Dict[str, Any]]) -> 'ProviderSettings':
+        """Merge with another settings object.
+        
+        Args:
+            other: Settings to merge with
+            
+        Returns:
+            New settings instance with merged values
+        """
+        if isinstance(other, dict):
+            # Convert dict to settings
+            other_settings = self.__class__(**other)
+        else:
+            other_settings = other
+            
+        # Start with current settings
+        merged_dict = self.model_dump()
+        
+        # Update with other settings (only non-None values)
+        for key, value in other_settings.model_dump().items():
+            if value is not None:
+                if key == "custom_settings":
+                    # Merge custom settings
+                    merged_dict["custom_settings"].update(value)
+                else:
+                    merged_dict[key] = value
+        
+        return self.__class__(**merged_dict)
+    
+    def with_overrides(self, **kwargs: Any) -> 'ProviderSettings':
+        """Create new settings with overrides.
+        
+        Args:
+            **kwargs: Settings to override
+            
+        Returns:
+            New settings instance with overrides
+        """
+        settings_dict = self.model_dump()
+        settings_dict.update(kwargs)
+        return self.__class__(**settings_dict)
 
 class Provider(ABC, Generic[T]):
     """Base class for all providers with enhanced lifecycle management.
@@ -58,26 +132,20 @@ class Provider(ABC, Generic[T]):
         
         Returns:
             Default settings for this provider
+            
+        Raises:
+            TypeError: If the provider class doesn't have proper generic type information
         """
         try:
-            # Try to get settings type from Generic
+            # Get settings type from Generic[T] parameter
             settings_type = self.__class__.__orig_bases__[0].__args__[0]
             return settings_type()
         except (AttributeError, IndexError):
-            # Fallback for when type information is unavailable
-            # This can happen when the class is instantiated by factory functions
-            # that don't preserve generic type information
-            logger.debug(f"Type information unavailable for {self.__class__.__name__}, using fallback")
-            
-            # Option 1: Check if we have a specific provider settings class for this provider type
-            for base in self.__class__.__mro__:
-                if base.__name__.endswith('ProviderSettings') and base != FlowSettings:
-                    logger.debug(f"Using settings class {base.__name__} as fallback")
-                    return base()
-            
-            # Option 2: Default to general FlowSettings if nothing better is found
-            logger.debug("No specific settings class found, defaulting to FlowSettings")
-            return FlowSettings()  # type: ignore
+            # No type fallbacks - providers must have proper type parameters
+            raise TypeError(
+                f"Provider class {self.__class__.__name__} must specify settings type as a generic parameter. "
+                f"Example: class MyProvider(Provider[MySettings]): ..."
+            )
     
     async def initialize(self) -> None:
         """Initialize the provider.

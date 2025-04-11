@@ -5,17 +5,14 @@ using an in-memory dictionary as the backend for caching.
 """
 
 import logging
-import json
-import pickle
 import time
-from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Union, Tuple
+from typing import Any, Optional
 import asyncio
-import threading
 from collections import OrderedDict
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.registry.decorators import provider
-from ...core.registry.constants import ProviderType
+from ..decorators import provider
+from ..constants import ProviderType
 from .base import CacheProvider, CacheProviderSettings
 
 logger = logging.getLogger(__name__)

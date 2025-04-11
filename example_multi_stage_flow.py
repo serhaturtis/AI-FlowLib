@@ -19,14 +19,19 @@ import asyncio
 import logging
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
+import inspect
 
-import flowlib as fl
-from flowlib.providers.llm.llama_cpp_provider import LlamaCppProvider, LlamaCppSettings
-from flowlib.core.registry.constants import ProviderType
 from flowlib.core.errors import ValidationError, ExecutionError
+from flowlib.resources.constants import ResourceType
+from flowlib.resources.registry import resource_registry
+from flowlib.resources.decorators import model, prompt
+from flowlib.providers.constants import ProviderType
+from flowlib.providers.registry import provider_registry
+from flowlib.flows.decorators import flow, stage, pipeline
+from flowlib.core.context import Context
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.DEBUG, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -49,10 +54,19 @@ class SentimentResult(BaseModel):
     score: float = Field(..., description="Sentiment score from -1 (negative) to 1 (positive)")
     entity_sentiments: Optional[Dict[str, float]] = Field(None, description="Sentiment for each entity")
 
+class SummaryInput(BaseModel):
+    extract_information: ExtractedInfo = Field(..., description="Extracted information")
+    analyze_sentiment: SentimentResult = Field(..., description="Sentiment analysis results")
+
 class TextSummary(BaseModel):
     """Output model from summarization stage."""
     summary: str = Field(..., description="Concise summary of the text")
     key_points: List[str] = Field(..., description="Key points from the text")
+
+class ReportInput(BaseModel):
+    extract_information: ExtractedInfo = Field(..., description="Extracted information")
+    analyze_sentiment: SentimentResult = Field(..., description="Sentiment analysis results")
+    generate_summary: TextSummary = Field(..., description="Summary of the text")
 
 class FinalReport(BaseModel):
     """Output model for the final report."""
@@ -70,121 +84,111 @@ class ReportResponse(BaseModel):
 
 # ===================== Define Prompts =====================
 
-@fl.prompt("information-extraction")
+@prompt("information-extraction")
 class InformationExtractionPrompt:
     """Prompt for extracting information from text."""
     template = """
     Extract key information from the following text:
     
     TEXT:
-    {text}
+    {{text}}
     
     Please identify:
-    1. Entities (people, organizations, locations, products) - up to {max_entities}
+    1. Entities (people, organizations, locations, products) - up to {{max_entities}}
     2. Key facts stated in the text
     3. Main topics discussed
-    
-
     """
 
-@fl.prompt("sentiment-analysis")
+@prompt("sentiment-analysis")
 class SentimentAnalysisPrompt:
     """Prompt for analyzing sentiment of text."""
     template = """
     Analyze the sentiment of the following extracted information:
     
     ENTITIES:
-    {entities}
+    {{entities}}
     
     KEY FACTS:
-    {key_facts}
+    {{key_facts}}
     
     TOPICS:
-    {topics}
+    {{topics}}
     
     Provide sentiment analysis with:
     1. Overall sentiment (positive, negative, or neutral)
     2. Sentiment score (-1.0 to 1.0, where -1 is very negative, 0 is neutral, 1 is very positive)
     3. Sentiment for each entity when possible
-    
-    Format your response as a JSON object with the following structure:
-    {{
-        "sentiment": "positive|negative|neutral",
-        "score": 0.0,
-        "entity_sentiments": {{
-            "entity name": score,
-            ...
-        }}
-    }}
     """
+    
+    config = {
+        "max_tokens": 1000,
+        "temperature": 0.2
+    }
 
-@fl.prompt("summarization")
+@prompt("summarization")
 class SummarizationPrompt:
     """Prompt for summarizing text."""
     template = """
     Create a concise summary of the following information:
     
     ENTITIES:
-    {entities}
+    {{entities}}
     
     KEY FACTS:
-    {key_facts}
+    {{key_facts}}
     
     TOPICS:
-    {topics}
+    {{topics}}
     
     SENTIMENT:
-    Overall sentiment: {sentiment}
+    Overall sentiment: {{sentiment}}
     
     Please provide:
     1. A concise summary paragraph
     2. 3-5 key points from the information
-    
-    Format your response as a JSON object with the following structure:
-    {{
-        "summary": "concise summary paragraph here",
-        "key_points": ["key point 1", "key point 2", ...]
-    }}
     """
+    
+    config = {
+        "max_tokens": 1000,
+        "temperature": 0.3
+    }
 
-@fl.prompt("report-generation")
+@prompt("report-generation")
 class ReportGenerationPrompt:
     """Prompt for generating the final report."""
     template = """
     Generate a comprehensive report based on the following analysis:
     
     EXTRACTED INFORMATION:
-    - Entities: {entities}
-    - Key Facts: {key_facts}
-    - Topics: {topics}
+    - Entities: {{entities}}
+    - Key Facts: {{key_facts}}
+    - Topics: {{topics}}
     
     SENTIMENT ANALYSIS:
-    - Overall Sentiment: {sentiment}
-    - Sentiment Score: {score}
+    - Overall Sentiment: {{sentiment}}
+    - Sentiment Score: {{score}}
     
     SUMMARY:
-    {summary}
+    {{summary}}
     
     Generate a report with:
     1. An appropriate title
     2. Executive summary
     3. 3-5 recommendations based on the analysis
-    
-    Format your response as a JSON object with the following structure:
-    {{
-        "title": "Report title",
-        "summary": "Executive summary paragraph",
-        "recommendations": ["recommendation 1", "recommendation 2", ...]
-    }}
     """
+    
+    config = {
+        "max_tokens": 1500,
+        "temperature": 0.4
+    }
 
 # ===================== Define LLM Model Configuration =====================
 
-@fl.model("text-analysis-model")
+@model("text-analysis-model")
 class LLMModelConfig:
     """Configuration for the text analysis LLM."""
-    path = "/path/to/model.gguf"
-    model_type = "phi4"
+    path = "/path/to/your/model.gguf"
+    model_type = "llama"
     n_ctx = 4096
     n_threads = 4
     n_batch = 512
@@ -196,18 +200,21 @@ class LLMModelConfig:
 # Debugging model registration
 print("Checking if 'text-analysis-model' is registered:")
 # Use contains method which is synchronous
-if fl.resource_registry.contains("text-analysis-model", resource_type="model"):
+if resource_registry.contains("text-analysis-model", resource_type="model"):
     print("Model is registered in the registry")
 else:
     print("Model is NOT registered in the registry")
 
 # We can't await here directly since this is not an async context
 # We'll log what's available instead
-print(f"Available models in registry: {fl.resource_registry.list('model')}")
+print(f"Available models in registry: {resource_registry.list('model')}")
 
 # ===================== Define Flow =====================
 
-@fl.flow(name="text-analysis-flow")
+@flow(
+    name="text-analysis-flow",
+    description="Flow for multi-stage text analysis including extraction, sentiment, summarization and reporting"
+)
 class TextAnalysisFlow:
     """Multi-stage flow for analyzing text with LLM.
     
@@ -218,55 +225,62 @@ class TextAnalysisFlow:
     4. Create a final formatted report
     """
     
-    @fl.stage(input_model=InputText, output_model=ExtractedInfo)
-    async def extract_information(self, context: fl.Context) -> ExtractedInfo:
+    @stage(input_model=InputText, output_model=ExtractedInfo)
+    async def extract_information(self, context: Context) -> ExtractedInfo:
         """Extract key information from the input text."""
         logger.info("Extracting information from text")
         
         # Get input data
-        input_data = context.data
+        input_data:InputText = context.data
         
-        # Get prompt from resource registry
-        extraction_prompt = await fl.resource_registry.get(
+        # Get prompt from resource registry - Fix: remove await from synchronous method
+        extraction_prompt = resource_registry.get(
             "information-extraction", 
-            resource_type=fl.ResourceType.PROMPT
+            resource_type=ResourceType.PROMPT
         )
         
         # Get LLM provider - using our registered provider
-        llm = await fl.provider_registry.get(ProviderType.LLM, "llamacpp")
+        llm = await provider_registry.get(ProviderType.LLM, "llamacpp")
         
-        # Format prompt with input data
-        formatted_prompt = extraction_prompt.template.format(
-            text=input_data.text,
-            max_entities=input_data.max_entities
-        )
+        # Create prompt variables
+        prompt_vars = {
+            "text": input_data.text,
+            "max_entities": input_data.max_entities
+        }
         
-        # Generate structured output using the LLM
+        # Ensure output_type is a class, not an instance
+        print(f"DEBUG: ExtractedInfo type: {type(ExtractedInfo)}")
+        print(f"DEBUG: ExtractedInfo is class: {inspect.isclass(ExtractedInfo)}")
+        
+        # Generate structured output using the LLM with Flowlib's template handling
         result = await llm.generate_structured(
-            formatted_prompt, 
-            ExtractedInfo,
-            "text-analysis-model",
-            **extraction_prompt.config
+            prompt=extraction_prompt,
+            output_type=ExtractedInfo,  # This is a class, not an instance
+            model_name="text-analysis-model",
+            prompt_variables=prompt_vars
         )
         
         # Print debug information about the result
         print(f"DEBUG: Result type from llm.generate_structured: {type(result)}")
         print(f"DEBUG: Result data: {result}")
-        if hasattr(result, "__class__"):
-            print(f"DEBUG: Result class: {result.__class__}")
-            print(f"DEBUG: Result class module: {result.__class__.__module__}")
         
-        # Ensure result is an ExtractedInfo instance
-        if isinstance(result, dict):
-            # Convert dict to ExtractedInfo
-            print(f"DEBUG: Converting dict to ExtractedInfo")
-            result = ExtractedInfo(**result)
+        # Validate and clean entities - ensure they have required keys
+        validated_entities = []
+        for entity in result.entities:
+            # Only include entities that have both type and value
+            if isinstance(entity, dict) and 'type' in entity and 'value' in entity:
+                validated_entities.append(entity)
+            else:
+                logger.warning(f"Skipping invalid entity: {entity}")
+        
+        # Update entities with validated list
+        result.entities = validated_entities
         
         logger.info(f"Extracted {len(result.entities)} entities and {len(result.key_facts)} facts")
         return result
     
-    @fl.stage(input_model=ExtractedInfo, output_model=SentimentResult)
-    async def analyze_sentiment(self, context: fl.Context) -> SentimentResult:
+    @stage(input_model=ExtractedInfo, output_model=SentimentResult)
+    async def analyze_sentiment(self, context: Context) -> SentimentResult:
         """Analyze sentiment of extracted information."""
         logger.info("Analyzing sentiment")
         
@@ -274,92 +288,100 @@ class TextAnalysisFlow:
         extracted_info = context.data
         
         # Get prompt from resource registry
-        sentiment_prompt = await fl.resource_registry.get(
+        sentiment_prompt = resource_registry.get(
             "sentiment-analysis", 
-            resource_type=fl.ResourceType.PROMPT
+            resource_type=ResourceType.PROMPT
         )
         
         # Get LLM provider - using our registered provider
-        llm = await fl.provider_registry.get(ProviderType.LLM, "llamacpp")
+        llm = await provider_registry.get(ProviderType.LLM, "llamacpp")
         
-        # Format entities for prompt - handle both object and dictionary data
-        if hasattr(extracted_info, 'entities'):
-            # Object with attributes
-            entities_text = "\n".join([f"- {e['type']}: {e['value']}" for e in extracted_info.entities])
-            key_facts_text = "\n".join([f"- {fact}" for fact in extracted_info.key_facts])
-            topics_text = "\n".join([f"- {topic}" for topic in extracted_info.topics])
-        else:
-            # Dictionary with keys
-            entities_text = "\n".join([f"- {e['type']}: {e['value']}" for e in extracted_info["entities"]])
-            key_facts_text = "\n".join([f"- {fact}" for fact in extracted_info["key_facts"]])
-            topics_text = "\n".join([f"- {topic}" for topic in extracted_info["topics"]])
+        # Format entities for prompt - validate that entities have required keys
+        entities_text_items = []
+        for entity in extracted_info.entities:
+            if 'type' in entity and 'value' in entity:
+                entities_text_items.append(f"- {entity['type']}: {entity['value']}")
+            elif entity:  # If entity has some data but not the expected structure
+                # Use whatever keys are available
+                entity_str = ", ".join(f"{k}: {v}" for k, v in entity.items())
+                if entity_str:
+                    entities_text_items.append(f"- {entity_str}")
         
-        # Format prompt
-        formatted_prompt = sentiment_prompt.template.format(
-            entities=entities_text,
-            key_facts=key_facts_text,
-            topics=topics_text
-        )
+        entities_text = "\n".join(entities_text_items) if entities_text_items else "No entities found."
+        key_facts_text = "\n".join([f"- {fact}" for fact in extracted_info.key_facts]) if extracted_info.key_facts else "No key facts found."
+        topics_text = "\n".join([f"- {topic}" for topic in extracted_info.topics]) if extracted_info.topics else "No topics identified."
+        
+        # Prepare prompt variables
+        prompt_vars = {
+            "entities": entities_text,
+            "key_facts": key_facts_text,
+            "topics": topics_text
+        }
         
         # Generate structured output
         result = await llm.generate_structured(
-            formatted_prompt, 
-            SentimentResult,
-            "text-analysis-model",
-            **sentiment_prompt.config
+            prompt=sentiment_prompt,
+            output_type=SentimentResult,
+            model_name="text-analysis-model",
+            prompt_variables=prompt_vars
         )
         
         logger.info(f"Sentiment analysis complete: {result.sentiment} (score: {result.score})")
         return result
     
-    @fl.stage(output_model=TextSummary)
-    async def generate_summary(self, context: fl.Context) -> TextSummary:
+    @stage(output_model=TextSummary)
+    async def generate_summary(self, context: Context) -> TextSummary:
         """Generate a summary based on extracted information and sentiment."""
         logger.info("Generating summary")
         
         # Get data from previous stages - now we have a SummaryInput model
-        combined_data = context.data
-        extracted_info = combined_data.extract_information
-        sentiment_result = combined_data.analyze_sentiment
+        combined_data:SummaryInput = context.data
+        extracted_info:ExtractedInfo = combined_data.extract_information
+        sentiment_result:SentimentResult = combined_data.analyze_sentiment
         
         # Get prompt
-        summarization_prompt = await fl.resource_registry.get(
+        summarization_prompt = resource_registry.get(
             "summarization", 
-            resource_type=fl.ResourceType.PROMPT
+            resource_type=ResourceType.PROMPT
         )
         
         # Get LLM provider - using our registered provider
-        llm = await fl.provider_registry.get(fl.ProviderType.LLM, "llamacpp")
+        llm = await provider_registry.get(ProviderType.LLM, "llamacpp")
         
-        # Format entities for prompt using Pydantic model attributes
-        entities_text = "\n".join([f"- {e['type']}: {e['value']}" for e in extracted_info.entities])
-        key_facts_text = "\n".join([f"- {fact}" for fact in extracted_info.key_facts])
-        topics_text = "\n".join([f"- {topic}" for topic in extracted_info.topics])
+        # Format entities safely for prompt
+        entities_text_items = []
+        for entity in extracted_info.entities:
+            if 'type' in entity and 'value' in entity:
+                entities_text_items.append(f"- {entity['type']}: {entity['value']}")
+        
+        entities_text = "\n".join(entities_text_items) if entities_text_items else "No entities found."
+        key_facts_text = "\n".join([f"- {fact}" for fact in extracted_info.key_facts]) if extracted_info.key_facts else "No key facts found."
+        topics_text = "\n".join([f"- {topic}" for topic in extracted_info.topics]) if extracted_info.topics else "No topics identified."
             
         # Get sentiment value directly from the model
         sentiment_value = sentiment_result.sentiment
         
-        # Format prompt
-        formatted_prompt = summarization_prompt.template.format(
-            entities=entities_text,
-            key_facts=key_facts_text,
-            topics=topics_text,
-            sentiment=sentiment_value
-        )
+        # Prepare prompt variables
+        prompt_vars = {
+            "entities": entities_text,
+            "key_facts": key_facts_text,
+            "topics": topics_text,
+            "sentiment": sentiment_value
+        }
         
         # Generate structured output
         result = await llm.generate_structured(
-            formatted_prompt, 
-            TextSummary,
-            "text-analysis-model",
-            **summarization_prompt.config
+            prompt=summarization_prompt,
+            output_type=TextSummary,
+            model_name="text-analysis-model",
+            prompt_variables=prompt_vars
         )
         
         logger.info(f"Summary generated with {len(result.key_points)} key points")
         return result
     
-    @fl.stage(output_model=FinalReport)
-    async def generate_report(self, context: fl.Context) -> FinalReport:
+    @stage(output_model=FinalReport)
+    async def generate_report(self, context: Context) -> FinalReport:
         """Generate final report combining all previous results."""
         logger.info("Generating final report")
         
@@ -370,18 +392,23 @@ class TextAnalysisFlow:
         summary_result = combined_data.generate_summary
         
         # Get prompt
-        report_prompt = await fl.resource_registry.get(
+        report_prompt = resource_registry.get(
             "report-generation", 
-            resource_type=fl.ResourceType.PROMPT
+            resource_type=ResourceType.PROMPT
         )
         
         # Get LLM provider - using our registered provider
-        llm = await fl.provider_registry.get(fl.ProviderType.LLM, "llamacpp")
+        llm = await provider_registry.get(ProviderType.LLM, "llamacpp")
         
-        # Format entities for prompt using Pydantic model attributes
-        entities_text = "\n".join([f"- {e['type']}: {e['value']}" for e in extracted_info.entities])
-        key_facts_text = "\n".join([f"- {fact}" for fact in extracted_info.key_facts])
-        topics_text = "\n".join([f"- {topic}" for topic in extracted_info.topics])
+        # Format entities safely for prompt
+        entities_text_items = []
+        for entity in extracted_info.entities:
+            if 'type' in entity and 'value' in entity:
+                entities_text_items.append(f"- {entity['type']}: {entity['value']}")
+        
+        entities_text = "\n".join(entities_text_items) if entities_text_items else "No entities found."
+        key_facts_text = "\n".join([f"- {fact}" for fact in extracted_info.key_facts]) if extracted_info.key_facts else "No key facts found."
+        topics_text = "\n".join([f"- {topic}" for topic in extracted_info.topics]) if extracted_info.topics else "No topics identified."
             
         # Get sentiment and score values directly from the model
         sentiment_value = sentiment_result.sentiment
@@ -390,22 +417,22 @@ class TextAnalysisFlow:
         # Get summary value directly from the model
         summary_value = summary_result.summary
         
-        # Format prompt
-        formatted_prompt = report_prompt.template.format(
-            entities=entities_text,
-            key_facts=key_facts_text,
-            topics=topics_text,
-            sentiment=sentiment_value,
-            score=score_value,
-            summary=summary_value
-        )
+        # Prepare prompt variables
+        prompt_vars = {
+            "entities": entities_text,
+            "key_facts": key_facts_text,
+            "topics": topics_text,
+            "sentiment": sentiment_value,
+            "score": score_value,
+            "summary": summary_value
+        }
         
         # Generate structured response
         result = await llm.generate_structured(
-            formatted_prompt, 
-            ReportResponse,  # Use our Pydantic model instead of dict
-            "text-analysis-model",
-            **report_prompt.config
+            prompt=report_prompt,
+            output_type=ReportResponse,
+            model_name="text-analysis-model",
+            prompt_variables=prompt_vars
         )
         
         # Create the final report using the models we already have
@@ -420,7 +447,7 @@ class TextAnalysisFlow:
         logger.info("Final report generated")
         return final_report
 
-    @fl.pipeline(input_model=InputText, output_model=FinalReport)
+    @pipeline(input_model=InputText, output_model=FinalReport)
     async def run_pipeline(self, input_data: InputText) -> FinalReport:
         """Execute the text analysis pipeline.
         
@@ -437,7 +464,7 @@ class TextAnalysisFlow:
         """
         # Create context with the input data
         # Input data is already a Pydantic model
-        input_context = fl.Context(data=input_data)
+        input_context = Context(data=input_data)
         
         # Get stage instances using the get_stage method
         extract_stage = self.get_stage("extract_information")
@@ -449,62 +476,33 @@ class TextAnalysisFlow:
         extract_result = await extract_stage.execute(input_context)
         # The extracted_info is now directly available as a model in result.data
         extracted_info = extract_result.data
-        if isinstance(extracted_info, dict):
-            # For backward compatibility, convert dict to model if needed
-            extracted_info = ExtractedInfo(**extracted_info)
         
         # Create a context with the extracted info as input (must be a model, not a dict)
-        sentiment_context = fl.Context(data=extracted_info)
+        sentiment_context = Context(data=extracted_info)
         sentiment_result = await sentiment_stage.execute(sentiment_context)
         # Get sentiment info directly from result
         sentiment_info = sentiment_result.data
-        if isinstance(sentiment_info, dict):
-            # For backward compatibility, convert dict to model if needed
-            sentiment_info = SentimentResult(**sentiment_info)
-        
-        # For the summary stage, we need to combine models into a single Pydantic model
-        # Create a new model to hold the combined data
-        class SummaryInput(BaseModel):
-            extract_information: ExtractedInfo
-            analyze_sentiment: SentimentResult
         
         summary_input = SummaryInput(
             extract_information=extracted_info,
             analyze_sentiment=sentiment_info
         )
         
-        summary_context = fl.Context(data=summary_input)
+        summary_context = Context(data=summary_input)
         summary_result = await summary_stage.execute(summary_context)
         # Get summary info directly from result
         summary_info = summary_result.data
-        if isinstance(summary_info, dict):
-            # For backward compatibility, convert dict to model if needed
-            summary_info = TextSummary(**summary_info)
-        
-        # For the report stage, create a combined model
-        class ReportInput(BaseModel):
-            extract_information: ExtractedInfo
-            analyze_sentiment: SentimentResult
-            generate_summary: TextSummary
-        
+
         report_input = ReportInput(
             extract_information=extracted_info,
             analyze_sentiment=sentiment_info,
             generate_summary=summary_info
         )
         
-        report_context = fl.Context(data=report_input)
+        report_context = Context(data=report_input)
         final_result = await report_stage.execute(report_context)
         
-        # The final_result.data should now be a FinalReport object directly
-        if isinstance(final_result.data, FinalReport):
-            return final_result.data
-        elif isinstance(final_result.data, dict):
-            # For backward compatibility, convert dict to model if needed
-            return FinalReport(**final_result.data)
-        else:
-            # This should not happen with our validations
-            raise ValueError(f"Expected FinalReport or dict result, got {type(final_result.data)}")
+        return final_result.data
 
 # ===================== Run the Flow =====================
 
@@ -533,20 +531,12 @@ async def run_flow():
         
         # Execute flow using the execute method instead of directly calling the pipeline method
         logger.info("Starting text analysis flow")
-        result = await flow.execute(fl.Context(data=input_data))
+        result = await flow.execute(Context(data=input_data))
         
         # Print results
         print("\n" + "="*80)
-        
-        # The result.data can now be a FinalReport object directly or a dict
-        if isinstance(result.data, FinalReport):
-            report = result.data
-        elif isinstance(result.data, dict):
-            # For backward compatibility, convert dict to model if needed
-            report = FinalReport(**result.data)
-        else:
-            # This should not happen with our validations
-            raise ValueError(f"Expected FinalReport or dict result, got {type(result.data)}")
+
+        report:FinalReport = result.data
         
         # Access model attributes directly 
         print(f"REPORT: {report.title}")

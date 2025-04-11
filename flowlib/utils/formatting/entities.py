@@ -6,7 +6,7 @@ and for use in prompts or other contexts.
 
 from typing import List, Dict, Any, Optional
 # Importing Entity type for type hints
-from flowlib.agents.memory.models import Entity
+from flowlib.agent.memory.models import Entity
 
 
 def format_entity_for_display(entity: 'Entity', detailed: bool = False) -> str:

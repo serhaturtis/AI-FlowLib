@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.registry.decorators import provider
-from ...core.registry.constants import ProviderType
 from .base import VectorDBProvider, VectorDBProviderSettings, VectorMetadata, SimilaritySearchResult
+from ..decorators import provider
+from ..constants import ProviderType
 
 logger = logging.getLogger(__name__)
 

@@ -8,9 +8,9 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Any, AsyncIterator
 
-from ...core.registry.decorators import conversation_provider
-from flowlib.providers.conversation.base import ConversationProvider, ConversationProviderSettings
-from flowlib.utils.formatting import (
+from ..decorators import conversation_provider
+from .base import ConversationProvider, ConversationProviderSettings
+from ...utils.formatting import (
     process_escape_sequences,
     format_agent_execution_details
 )

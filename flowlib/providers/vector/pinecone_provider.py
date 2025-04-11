@@ -6,18 +6,13 @@ for Pinecone, a managed vector database service.
 
 import logging
 import asyncio
-import json
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
-from datetime import datetime
-
-from pydantic import Field
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
-from ...core.registry.decorators import provider
-from ...core.registry.constants import ProviderType
 from .base import VectorDBProvider, VectorDBProviderSettings, VectorMetadata, SimilaritySearchResult
+from ..decorators import provider
+from ..constants import ProviderType
 
 logger = logging.getLogger(__name__)
 

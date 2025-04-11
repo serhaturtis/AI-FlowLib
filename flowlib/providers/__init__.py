@@ -15,10 +15,10 @@ from .base import Provider
 from .factory import create_provider
 
 # Import from the registry system
-from ..core.registry import provider_registry
-from ..core.registry import ProviderType
-from ..core.registry import provider, llm_provider, db_provider, vector_db_provider
-from ..core.registry import cache_provider, storage_provider, message_queue_provider
+from .registry import provider_registry
+from .constants import ProviderType
+from .decorators import provider, llm_provider, db_provider, vector_db_provider
+from .decorators import cache_provider, storage_provider, message_queue_provider
 
 # Re-export common provider types
 from .llm import LLMProvider

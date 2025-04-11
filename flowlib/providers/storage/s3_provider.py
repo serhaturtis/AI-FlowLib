@@ -4,19 +4,13 @@ This module provides a concrete implementation of the StorageProvider
 for AWS S3 and S3-compatible storage services using boto3.
 """
 
-import logging
 import os
-import io
-import asyncio
-from typing import Any, Dict, List, Optional, Type, TypeVar, BinaryIO, Tuple, Union
-from datetime import datetime, timedelta
-import mimetypes
-
-from pydantic import Field
+import logging
+from typing import Dict, List, Optional, BinaryIO, Tuple, Union
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
 from .base import StorageProvider, StorageProviderSettings, FileMetadata
+
 
 logger = logging.getLogger(__name__)
 

@@ -7,13 +7,12 @@ for ChromaDB, an open-source embedding database.
 import logging
 import os
 from typing import Any, Dict, List, Optional, Collection
-import asyncio
 import uuid
 
 from ...core.errors import ProviderError, ErrorContext
 from .base import VectorDBProvider, VectorDBProviderSettings, SimilaritySearchResult
-from ...core.registry import provider
-from ...core.registry.constants import ProviderType
+from ..decorators import provider
+from ..constants import ProviderType
 
 logger = logging.getLogger(__name__)
 

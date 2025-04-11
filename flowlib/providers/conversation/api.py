@@ -7,13 +7,11 @@ enabling integration with external applications.
 import logging
 import asyncio
 import json
-import os
-from typing import Optional, Dict, Any, List, Set, Deque
-from collections import deque
+from typing import Optional, Dict, Any
 import uuid
 from aiohttp import web
 
-from ...core.registry.decorators import conversation_provider
+from ..decorators import conversation_provider
 from .base import ConversationProvider, ConversationProviderSettings
 
 logger = logging.getLogger(__name__)

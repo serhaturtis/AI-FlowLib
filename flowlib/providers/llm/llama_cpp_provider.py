@@ -5,17 +5,18 @@ library, which provides efficient inference on consumer hardware.
 """
 
 import logging
+import inspect
 import os
 import json
-from typing import Any, Dict, List, Optional, Type, Union
-import asyncio
-from pydantic import BaseModel, Field, ValidationError, validate_arguments
+from typing import Any, Dict, Optional, Type
+from llama_cpp import LlamaGrammar
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.registry.decorators import provider
-from ...core.models.settings import LLMProviderSettings
-from ...core.registry.constants import ProviderType
+from ..decorators import provider
+from ..constants import ProviderType
 from .base import LLMProvider, ModelType
+from .base import LLMProviderSettings
+from ...resources.decorators import PromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -185,19 +186,20 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
         self._models = {}
         self._initialized = False
         
-    async def generate(self, prompt: str, model_name: str, **kwargs) -> str:
+    async def generate(self, prompt: PromptTemplate, model_name: str, prompt_variables: Optional[Dict[str, Any]] = None) -> str:
         """Generate text completion.
         
         Args:
-            prompt: Input prompt
+            prompt: Prompt template object with template and config attributes
             model_name: Name of the model to use
-            **kwargs: Generation parameters
+            prompt_variables: Dictionary of variables to format the prompt template
             
         Returns:
             Generated text
             
         Raises:
             ProviderError: If generation fails
+            TypeError: If prompt is not a valid template object
         """
         # Make sure model is initialized
         if model_name not in self._models:
@@ -208,22 +210,41 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
         model_config = model_data["config"]
             
         try:
-            # Get generation parameters with defaults
-            max_tokens = kwargs.get("max_tokens", getattr(model_config, "max_tokens", 512))
-            temperature = kwargs.get("temperature", getattr(model_config, "temperature", 0.7))
-            top_p = kwargs.get("top_p", getattr(model_config, "top_p", 0.9))
-            top_k = kwargs.get("top_k", getattr(model_config, "top_k", 40))
-            repeat_penalty = kwargs.get("repeat_penalty", getattr(model_config, "repeat_penalty", 1.1))
+            # Validate prompt is a template object with template attribute
+            if not hasattr(prompt, 'template'):
+                raise TypeError(f"prompt must be a template object with 'template' attribute, got {type(prompt).__name__}")
+            
+            # Get template string from prompt
+            template_str = prompt.template
+            
+            # Get config from prompt object if available
+            if hasattr(prompt, 'config') and prompt.config:
+                # Override model_config with ALL values from prompt.config
+                for param_name, param_value in prompt.config.items():
+                    setattr(model_config, param_name, param_value)
+            
+            # Format prompt with variables if provided
+            formatted_prompt = template_str
+            if prompt_variables:
+                # Format the template with variables
+                formatted_prompt = self.format_template(template_str, {"variables": prompt_variables})
+            
+            # Get generation parameters from model config
+            max_tokens = getattr(model_config, "max_tokens", 512)
+            temperature = getattr(model_config, "temperature", 0.7)
+            top_p = getattr(model_config, "top_p", 0.9)
+            top_k = getattr(model_config, "top_k", 40)
+            repeat_penalty = getattr(model_config, "repeat_penalty", 1.1)
             
             # Run generation
             result = model(
-                prompt,
+                formatted_prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
                 repeat_penalty=repeat_penalty,
-                stop=kwargs.get("stop", [])
+                stop=[]
             )
             
             # Extract generated text
@@ -238,304 +259,213 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
                 return str(result)
                 
         except Exception as e:
+            if isinstance(e, TypeError) and ("must be a template object" in str(e) or "output_type must be a class" in str(e)):
+                # Re-raise TypeError for invalid prompt or output_type
+                raise
             raise ProviderError(
                 message=f"Generation failed: {str(e)}",
                 provider_name=self.name,
                 context=ErrorContext.create(
                     model_name=model_name,
-                    prompt=prompt[:100] + "..." if len(prompt) > 100 else prompt
+                    prompt_length=len(str(prompt)) if prompt else 0
                 ),
                 cause=e
-            ) 
+            )
             
-    async def generate_structured(self, prompt: str, output_type: Type[ModelType], model_name: str, **kwargs) -> ModelType:
+    async def generate_structured(self, prompt: PromptTemplate, output_type: Type[ModelType], model_name: str, prompt_variables: Optional[Dict[str, Any]] = None) -> ModelType:
         """Generate structured output using a JSON grammar.
         
         Args:
-            prompt: Input prompt
+            prompt: Prompt template object with template and config attributes
             output_type: Pydantic model for output validation
             model_name: Name of the model to use
-            **kwargs: Generation parameters
+            prompt_variables: Dictionary of variables to format the prompt template
             
         Returns:
             Validated response model instance
             
         Raises:
             ProviderError: If generation fails
+            TypeError: If prompt is not a valid template object or if output_type is not a class
         """
+        # Ensure output_type is a class, not an instance
+        if not inspect.isclass(output_type):
+            raise TypeError(f"output_type must be a class, not an instance of {type(output_type)}")
+        
         # Make sure model is initialized
         if model_name not in self._models:
             await self._initialize_model(model_name)
-            
+        
         model_data = self._models[model_name]
         model = model_data["model"]
         model_config = model_data["config"]
         model_type = model_data["type"]
-            
+        
+        # Validate prompt is a template object with template attribute
+        if not hasattr(prompt, 'template'):
+            raise TypeError(f"prompt must be a template object with 'template' attribute, got {type(prompt).__name__}")
+        
+        # Get template string from prompt
+        template_str = prompt.template
+        
+        # Get config from prompt object if available
+        if hasattr(prompt, 'config') and prompt.config:
+            # Override model_config with ALL values from prompt.config
+            for param_name, param_value in prompt.config.items():
+                setattr(model_config, param_name, param_value)
+        
+        # Format prompt with variables if provided
+        formatted_prompt_text = template_str
+        if prompt_variables:
+            # Format the template with variables
+            formatted_prompt_text = self.format_template(template_str, {"variables": prompt_variables})
+        
+        # Format the prompt according to model type
+        formatted_prompt = self._format_prompt(formatted_prompt_text, model_type, output_type)
+        
+        # Get generation parameters from model config
+        max_tokens = getattr(model_config, "max_tokens", 1024)
+        temperature = getattr(model_config, "temperature", 0.2)
+        top_p = getattr(model_config, "top_p", 0.95)
+        top_k = getattr(model_config, "top_k", 40)
+        repeat_penalty = getattr(model_config, "repeat_penalty", 1.1)
+        
+        # Log generation parameters
+        logger.info("Starting LLM structured generation with parameters:")
+        logger.info(f"  Model: {model_name}")
+        logger.info(f"  Model Type: {model_type}")
+        logger.info(f"  Response Model: {output_type.__name__}")
+        logger.info("  Generation Parameters:")
+        for name, value in {
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k
+        }.items():
+            logger.info(f"    {name}: {value}")
+
+        # Get schema from model
         try:
-            # Format the prompt according to model type
-            formatted_prompt = self._format_prompt(prompt, model_type)
-            
-            # DEBUG: Print the formatted prompt after model-specific formatting
-            print("\n===== MODEL-FORMATTED PROMPT (TO BE SENT TO LLM) =====")
-            # Print a shortened version to avoid overwhelming the console
-            if len(formatted_prompt) > 2000:
-                print(formatted_prompt[:1000] + "\n[...]\n" + formatted_prompt[-1000:])
-            else:
-                print(formatted_prompt)
-            print("===== END MODEL-FORMATTED PROMPT =====\n")
-            
-            # Get generation parameters with defaults
-            max_tokens = kwargs.get("max_tokens", getattr(model_config, "max_tokens", 1024))
-            temperature = kwargs.get("temperature", getattr(model_config, "temperature", 0.2))
-            top_p = kwargs.get("top_p", getattr(model_config, "top_p", 0.95))
-            top_k = kwargs.get("top_k", getattr(model_config, "top_k", 40))
-            repeat_penalty = kwargs.get("repeat_penalty", getattr(model_config, "repeat_penalty", 1.1))
-            
-            # Debug model and type info
-            print(f"===== DEBUG: OUTPUT TYPE INFO =====")
-            print(f"Output type class: {output_type}")
-            print(f"Output type dir: {dir(output_type)}")
-            if hasattr(output_type, '__annotations__'):
-                print(f"Output type annotations: {output_type.__annotations__}")
-            if hasattr(output_type, 'model_fields'):
-                print(f"Output type model_fields: {output_type.model_fields}")
-            print("===== END DEBUG: OUTPUT TYPE INFO =====\n")
-            
-            # Log generation parameters
-            logger.info("Starting LLM structured generation with parameters:")
-            logger.info(f"  Model: {model_name}")
-            logger.info(f"  Model Type: {model_type}")
-            logger.info(f"  Response Model: {output_type.__name__}")
-            logger.info("  Generation Parameters:")
-            for name, value in {
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k
-            }.items():
-                logger.info(f"    {name}: {value}")
-            
-            # Create grammar from response model schema
-            try:
-                from llama_cpp import LlamaGrammar
-                
-                # Get schema from model
-                print("\n===== DEBUG: CREATING GRAMMAR =====")
-                if hasattr(output_type, "model_json_schema"):
-                    # Pydantic v2
-                    print("Using Pydantic v2 model_json_schema")
-                    schema = output_type.model_json_schema()
-                else:
-                    # Pydantic v1
-                    print("Using Pydantic v1 schema")
-                    schema = output_type.schema()
-                
-                print(f"Schema from model: {json.dumps(schema, indent=2)}")
-                
-                # Create grammar from schema
-                schema_str = json.dumps(schema)
-                print("Creating grammar from schema...")
-                try:
-                    grammar = LlamaGrammar.from_json_schema(schema_str)
-                    print("Grammar created successfully")
-                except Exception as grammar_err:
-                    print(f"Grammar creation error: {type(grammar_err).__name__}: {str(grammar_err)}")
-                    raise
-                
-                print("===== END DEBUG: CREATING GRAMMAR =====\n")
-                
-                # Generate with grammar
-                print("\n===== DEBUG: GENERATION WITH GRAMMAR =====")
-                print("Calling model with grammar...")
-                try:
-                    result = model(
-                        formatted_prompt,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        repeat_penalty=repeat_penalty,
-                        grammar=grammar
-                    )
-                    print("Generation with grammar completed successfully")
-                except Exception as gen_err:
-                    print(f"Generation error: {type(gen_err).__name__}: {str(gen_err)}")
-                    raise
-                print("===== END DEBUG: GENERATION WITH GRAMMAR =====\n")
-                
-            except (ImportError, AttributeError) as e:
-                # Fall back to regular generation if grammar not supported
-                print(f"\n===== DEBUG: GRAMMAR NOT SUPPORTED =====")
-                print(f"Error: {type(e).__name__}: {str(e)}")
-                logger.warning(f"Grammar-based generation not available: {str(e)}. Falling back to standard generation.")
-                
-                print("Falling back to standard generation without grammar...")
-                try:
-                    result = model(
-                        formatted_prompt,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        repeat_penalty=repeat_penalty
-                    )
-                    print("Standard generation completed successfully")
-                except Exception as gen_err:
-                    print(f"Standard generation error: {type(gen_err).__name__}: {str(gen_err)}")
-                    raise
-                print("===== END DEBUG: STANDARD GENERATION =====\n")
-            
-            # Extract generated text
-            if isinstance(result, dict) and "choices" in result:
-                generated_text = result["choices"][0]["text"]
-            elif isinstance(result, list) and len(result) > 0:
-                generated_text = result[0]["text"] if "text" in result[0] else ""
-            else:
-                generated_text = str(result)
-                
-            logger.info(f"Generated text: {generated_text[:200]}...")
-            
-            # Parse and validate response
-            try:
-                # Debug prints for JSON parsing
-                print("\n===== PARSING LLM RESPONSE =====")
-                print(f"Raw generated text (first 300 chars):\n{generated_text[:300]}")
-                
-                # Extract JSON from the text if necessary
-                if not generated_text.strip().startswith('{') and not generated_text.strip().startswith('['):
-                    # Try to extract JSON from the text
-                    import re
-                    print("Text doesn't start with { or [ - attempting to extract JSON with regex")
-                    json_match = re.search(r'(\{.*\}|\[.*\])', generated_text, re.DOTALL)
-                    if json_match:
-                        json_str = json_match.group(0)
-                        print(f"JSON extracted with regex (first 300 chars):\n{json_str[:300]}")
-                    else:
-                        print("Failed to extract JSON with regex")
-                        raise ProviderError(
-                            message="Failed to extract JSON from response",
-                            provider_name=self.name,
-                            context=ErrorContext.create(
-                                response_text=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
-                            )
-                        )
-                else:
-                    json_str = generated_text
-                    print("Text appears to be JSON format already")
-                
-                # Parse JSON with lenient decoder
-                print("Attempting to parse JSON with lenient decoder")
-                try:
-                    decoder = json.JSONDecoder(strict=False)
-                    parsed_response = decoder.decode(json_str)
-                    print("JSON parsing successful")
-                    print(f"Parsed response type: {type(parsed_response)}")
-                    if isinstance(parsed_response, dict):
-                        print(f"Keys in parsed response: {list(parsed_response.keys())}")
-                except json.JSONDecodeError as json_err:
-                    print(f"JSON decode error: {str(json_err)}")
-                    print(f"Error position: {json_err.pos}")
-                    print(f"Error line/col: Line {json_err.lineno}, Column {json_err.colno}")
-                    print(f"Document context: {json_str[max(0, json_err.pos-50):json_err.pos+50]}")
-                    raise ProviderError(
-                        message=f"Failed to parse JSON response: {str(json_err)}",
-                        provider_name=self.name,
-                        context=ErrorContext.create(
-                            response_text=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text,
-                            error=str(json_err)
-                        ),
-                        cause=json_err
-                    )
-                
-                # Sanitize strings in the parsed data
-                print("Sanitizing strings in parsed data")
-                def sanitize_strings(obj):
-                    if isinstance(obj, str):
-                        return obj.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                    elif isinstance(obj, dict):
-                        return {k: sanitize_strings(v) for k, v in obj.items()}
-                    elif isinstance(obj, list):
-                        return [sanitize_strings(item) for item in obj]
-                    return obj
-                
-                sanitized_data = sanitize_strings(parsed_response)
-                
-                # Validate with response model
-                print(f"Validating against model: {output_type.__name__}")
-                try:
-                    if hasattr(output_type, "model_validate"):
-                        # Pydantic v2
-                        print("Using Pydantic v2 model_validate")
-                        result = output_type.model_validate(sanitized_data)
-                    else:
-                        # Pydantic v1
-                        print("Using Pydantic v1 parse_obj")
-                        result = output_type.parse_obj(sanitized_data)
-                    
-                    print("Model validation successful")
-                    print("===== PARSING COMPLETE =====\n")
-                    return result
-                    
-                except Exception as validation_err:
-                    print(f"Validation error: {str(validation_err)}")
-                    if hasattr(validation_err, '__cause__') and validation_err.__cause__:
-                        print(f"Cause: {validation_err.__cause__}")
-                    raise ProviderError(
-                        message=f"Failed to validate response: {str(validation_err)}",
-                        provider_name=self.name,
-                        context=ErrorContext.create(
-                            error=str(validation_err),
-                            error_type=type(validation_err).__name__,
-                            response=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
-                        ),
-                        cause=validation_err
-                    )
-                    
-            except Exception as e:
-                if not isinstance(e, ProviderError):
-                    raise ProviderError(
-                        message=f"Structured generation failed: {str(e)}",
-                        provider_name=self.name,
-                        context=ErrorContext.create(
-                            prompt_length=len(prompt),
-                            model_name=model_name,
-                            model_type=model_type,
-                            error=str(e),
-                            error_type=type(e).__name__
-                        ),
-                        cause=e
-                    )
-                raise
-                
-        except Exception as e:
-            if not isinstance(e, ProviderError):
-                raise ProviderError(
-                    message=f"Structured generation failed: {str(e)}",
-                    provider_name=self.name,
-                    context=ErrorContext.create(
-                        prompt_length=len(prompt),
-                        model_name=model_name,
-                        model_type=model_type,
-                        error=str(e),
-                        error_type=type(e).__name__
-                    ),
-                    cause=e
+            schema = output_type.model_json_schema()
+        except AttributeError as e:
+            raise ProviderError(
+                message=f"Cannot generate structured output: {str(e)}. Model type does not support schema generation.",
+                provider_name=self.name,
+                context=ErrorContext.create(
+                    input_text=formatted_prompt[:100],
+                    model_type=output_type.__name__ if hasattr(output_type, "__name__") else str(output_type)
                 )
-            raise
+            ) from e
+        
+        # Create grammar from schema
+        schema_str = json.dumps(schema)
+        try:
+            grammar = LlamaGrammar.from_json_schema(schema_str)
+        except Exception as e:
+            raise ProviderError(
+                message=f"Failed to create grammar from schema: {str(e)}",
+                provider_name=self.name,
+                context=ErrorContext.create(
+                    schema=schema_str
+                )
+            ) from e
+        
+        # Log the formatted prompt
+        logger.info("=============== FORMATTED PROMPT ===============")
+        logger.info(formatted_prompt)
+        logger.info("================================================")
+        
+        # Generate with grammar
+        try:
+            result = model(
+                formatted_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                grammar=grammar
+            )
+        except Exception as e:
+            raise ProviderError(
+                message=f"Failed to generate with grammar: {str(e)}",
+                provider_name=self.name,
+                context=ErrorContext.create(
+                    input_text=formatted_prompt[:100]
+                )
+            ) from e
+        
+        # Extract generated text
+        if isinstance(result, dict) and "choices" in result:
+            generated_text = result["choices"][0]["text"]
+        elif isinstance(result, list) and len(result) > 0:
+            generated_text = result[0]["text"] if "text" in result[0] else str(result[0])
+        else:
+            generated_text = str(result)
+        
+        logger.info(f"Generated text: {generated_text[:200]}...")
+        
+        # Parse JSON directly - no fallback or extraction attempts
+        try:
+            parsed_data = json.loads(generated_text)
+        except json.JSONDecodeError as e:
+            raise ProviderError(
+                message=f"Failed to parse JSON from response: {str(e)}",
+                provider_name=self.name,
+                context=ErrorContext.create(
+                    response_text=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
+                )
+            ) from e
+        
+        # Sanitize strings in parsed data
+        sanitized_data = self._sanitize_strings(parsed_data)
+        
+        # Validate against target model
+        try:
+            # Create an instance of the output_type class using the parsed data
+            validated_response = output_type.model_validate(sanitized_data)
+            return validated_response
+        except Exception as e:
+            raise ProviderError(
+                message=f"Failed to validate response against model {output_type.__name__}: {str(e)}",
+                provider_name=self.name,
+                context=ErrorContext.create(
+                    response_text=json.dumps(sanitized_data)[:200] + "..." if len(json.dumps(sanitized_data)) > 200 else json.dumps(sanitized_data)
+                )
+            ) from e
             
-    def _format_prompt(self, prompt: str, model_type: str) -> str:
+    def _format_prompt(self, prompt: str, model_type: str = "default", output_type: Optional[Type[ModelType]] = None) -> str:
         """Format a prompt according to model-specific requirements.
+        
+        Applies model-specific formatting templates.
         
         Args:
             prompt: The main prompt text
             model_type: The type/name of the model
+            output_type: Optional Pydantic model type for structured output
             
         Returns:
             Formatted prompt string
         """
-        # Model-specific formatting templates
-        templates = {
+        # First, let the base class potentially add JSON structure information
+        prompt_with_json = super()._format_prompt(prompt, model_type, output_type)
+        
+        # Get template for model type or use default
+        templates = self._get_model_templates()
+        template = templates.get(model_type.lower(), templates["default"])
+        
+        # Apply template formatting
+        formatted = template["pre_prompt"] + prompt_with_json + template["post_prompt"]
+        
+        return formatted
+        
+    def _get_model_templates(self) -> Dict[str, Dict[str, str]]:
+        """Get model-specific prompt templates for different LLM architectures.
+        
+        Returns:
+            Dictionary mapping model_type to pre/post prompt templates
+        """
+        return {
             "default": {
                 "pre_prompt": "",
                 "post_prompt": ""
@@ -561,14 +491,6 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
                 "post_prompt": "\n<|im_end|><|im_start|>assistant\n"
             }
         }
-        
-        # Get template for model type or use default
-        template = templates.get(model_type.lower(), templates["default"])
-        
-        # Apply template formatting
-        formatted = template["pre_prompt"] + prompt + template["post_prompt"]
-        
-        return formatted
         
     def _extract_json(self, text: str) -> str:
         """Extract JSON from text response.
@@ -601,29 +523,23 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
             pass
             
         return ""
-        
-    def format_template(self, template: str, kwargs: Dict[str, Any]) -> str:
-        """Format a template with variables.
-        
-        Replaces {{variable}} in the template with the corresponding value.
+
+    def _sanitize_strings(self, obj):
+        """Sanitize strings in parsed data to ensure consistent formatting.
         
         Args:
-            template: Template string with {{variable}} placeholders
-            kwargs: Dict containing variables and their values
+            obj: Object to sanitize (dict, list, string, or primitive)
             
         Returns:
-            Formatted template string
+            Sanitized object with special characters in strings properly escaped
         """
-        if "variables" in kwargs and isinstance(kwargs["variables"], dict):
-            variables = kwargs["variables"]
-            result = template
-            
-            # Replace {{variable}} with corresponding value
-            for key, value in variables.items():
-                placeholder = f"{{{{{key}}}}}"
-                result = result.replace(placeholder, str(value))
-                
-            return result
-        
-        # No variables provided, return template as-is
-        return template 
+        if isinstance(obj, str):
+            # Remove any special formatting characters that might cause issues
+            return obj.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+        elif isinstance(obj, dict):
+            return {k: self._sanitize_strings(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._sanitize_strings(item) for item in obj]
+        else:
+            # Return other types unchanged
+            return obj 

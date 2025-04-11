@@ -5,14 +5,11 @@ that share common functionality for storing and retrieving cached data.
 """
 
 import logging
-import time
-from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Union
-import asyncio
-from datetime import timedelta
-from pydantic import BaseModel, Field
+from typing import Any, Optional, Type, TypeVar, Generic
+from pydantic import BaseModel
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
+from ..base import ProviderSettings
 from ..base import Provider
 
 logger = logging.getLogger(__name__)

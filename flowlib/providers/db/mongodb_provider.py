@@ -23,10 +23,9 @@ except ImportError:
 from pydantic import Field
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
-from ...core.registry.decorators import provider
-from ...core.registry.constants import ProviderType
 from .base import DBProvider, DBProviderSettings
+from ..decorators import provider
+from ..constants import ProviderType
 
 try:
     import motor.motor_asyncio

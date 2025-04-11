@@ -7,18 +7,15 @@ for Apache Kafka messaging using aiokafka.
 import logging
 import asyncio
 import json
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union, Callable, Set
-import uuid
+from typing import Any, Dict, Optional, Union, Callable
 from datetime import datetime
-import io
 
 from pydantic import Field
 
 from ...core.errors import ProviderError, ErrorContext
-from ...core.models.settings import ProviderSettings
-from ...core.registry.decorators import provider
-from ...core.registry.constants import ProviderType
 from .base import MQProvider, MQProviderSettings, MessageMetadata
+from ..decorators import provider
+from ..constants import ProviderType
 
 logger = logging.getLogger(__name__)
 
