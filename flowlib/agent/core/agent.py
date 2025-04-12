@@ -10,7 +10,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 from .base import BaseComponent
-from .registry import agent_registry
 from .errors import ConfigurationError, ExecutionError, StatePersistenceError, NotInitializedError, ComponentError
 from ..memory.agent_memory import AgentMemory
 from ..engine.base import AgentEngine
@@ -21,8 +20,18 @@ from ..models.config import AgentConfig
 from ..models.state import AgentState
 from ..persistence.base import BaseStatePersister
 from ...flows.base import Flow
+from ...flows.metadata import FlowMetadata
 from ...flows.registry import stage_registry, StageRegistry
 from ...flows.results import FlowResult
+from ..discovery.flow_discovery import FlowDiscovery
+from ..memory.models import MemoryStoreRequest
+from ..memory.models import MemoryRetrieveRequest
+from ..memory.models import MemorySearchRequest
+
+from ..learn.entity_extraction import EntityExtractionFlow
+from ..learn.relationship_learning import RelationshipLearningFlow
+from ..learn.knowledge_integration import KnowledgeIntegrationFlow
+from ..learn.concept_formation import ConceptFormationFlow
 
 from flowlib.agent.learn.models import LearningRequest, LearningResponse, LearningStrategy, Entity, Relationship
 
@@ -82,12 +91,7 @@ class AgentCore(BaseComponent):
         
         # Store last result
         self.last_result = None
-        
-        # Register with agent registry if available
-        if agent_registry and not agent_registry.contains(self.name):
-            agent_registry.register(self.name, self)
-        
-        self._register_learning_flows()
+
     
     def _prepare_config(self, config: Optional[Union[Dict[str, Any], AgentConfig]] = None) -> AgentConfig:
         """Prepare configuration for the agent using a simplified approach.
@@ -204,10 +208,6 @@ class AgentCore(BaseComponent):
             # Shutdown state persister
             if self._state_persister:
                 await self._state_persister.shutdown()
-                
-            # Unregister from agent registry if available
-            if agent_registry:
-                agent_registry.unregister(self.name)
                 
         except Exception as e:
             logger.error(f"Error during AgentCore shutdown: {str(e)}")
@@ -396,9 +396,6 @@ class AgentCore(BaseComponent):
                 message="Stage registry is not available for flow discovery",
                 operation="discover_flows"
             )
-            
-        # Import here to avoid circular imports
-        from ..discovery.flow_discovery import FlowDiscovery
         
         # Create flow discovery
         discovery = FlowDiscovery()
@@ -534,7 +531,6 @@ class AgentCore(BaseComponent):
         Raises:
             ConfigurationError: If flow metadata cannot be accessed
         """
-        from ...flows.metadata import FlowMetadata
         
         if not stage_registry:
             raise ConfigurationError(
@@ -574,9 +570,6 @@ class AgentCore(BaseComponent):
                 operation="store_memory"
             )
         
-        # Create store request from parameters
-        from ..memory.models import MemoryStoreRequest
-        
         request = MemoryStoreRequest(
             key=key,
             value=value
@@ -611,8 +604,6 @@ class AgentCore(BaseComponent):
             )
         
         # Create retrieve request from parameters
-        from ..memory.models import MemoryRetrieveRequest
-        
         request = MemoryRetrieveRequest(
             key=key
         )
@@ -645,9 +636,7 @@ class AgentCore(BaseComponent):
                 operation="search_memory"
             )
         
-        # Create search request from parameters
-        from ..memory.models import MemorySearchRequest
-        
+        # Create search request from parameters        
         request = MemorySearchRequest(
             query=query
         )
@@ -845,19 +834,6 @@ class AgentCore(BaseComponent):
                 state=self.state,
                 cause=e
             )
-    
-    def _register_learning_flows(self):
-        """Register standard learning flows."""
-        from ..learn.entity_extraction import EntityExtractionFlow
-        from ..learn.relationship_learning import RelationshipLearningFlow
-        from ..learn.knowledge_integration import KnowledgeIntegrationFlow
-        from ..learn.concept_formation import ConceptFormationFlow
-        
-        # Register all flows
-        self.register_flow(EntityExtractionFlow())
-        self.register_flow(RelationshipLearningFlow())
-        self.register_flow(KnowledgeIntegrationFlow())
-        self.register_flow(ConceptFormationFlow())
     
     async def learn(self, request: LearningRequest) -> LearningResponse:
         """Execute a learning flow based on the requested strategy.

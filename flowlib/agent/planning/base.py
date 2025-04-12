@@ -20,6 +20,7 @@ from ...flows.registry import stage_registry
 from ..models.state import AgentState
 from ..models.config import PlannerConfig
 from ...utils.pydantic.schema import model_to_simple_json_schema
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -238,72 +239,80 @@ class BasePlanning(BaseComponent, PlanningInterface):
         flow_name: str,
         planning_result: Dict[str, Any],
         memory_context: str,
-    ) -> Dict[str, Any]:
+        flow: Optional[Any] = None
+    ) -> BaseModel:
         """Generate inputs for a flow based on state and planning result.
-        
-        This implementation requires:
-        - A configured model provider (self.llm_provider)
-        - Access to stage_registry for flow information
-        - An input generation template (_input_generation_template)
         
         Args:
             state: Agent state object containing task details and history
             flow_name: Name of the flow to generate inputs for
             planning_result: Result from planning phase
             memory_context: Memory context for this cycle
+            flow: Flow instance (optional)
             
         Returns:
-            Generated inputs for the flow as a dictionary
+            Generated input model for the flow as a Pydantic BaseModel instance
             
         Raises:
             PlanningError: If input generation fails
-            NotInitializedError: If required components are not initialized
+            NotInitializedError: If required components are missing
         """
-        # Ensure planner is initialized
-        if not self._initialized:
+        if not self._input_generation_template:
             raise NotInitializedError(
                 component_name=self._name,
-                operation="generate_inputs"
+                operation="generate_inputs",
+                details="Input generation template is not initialized"
             )
         
-        # Check if the flow exists in stage_registry
-        flow_instances = stage_registry.get_flow_instances()
-        if flow_name not in flow_instances:
-            raise PlanningError(f"Flow '{flow_name}' not found in registry")
-        
-        # Get flow metadata from registry - fail if not available
+        # Get flow metadata to determine input model
         flow_metadata = stage_registry.get_flow_metadata(flow_name)
         if not flow_metadata:
-            raise PlanningError(f"Flow '{flow_name}' has no metadata in registry. Flows must be properly registered with metadata.")
+            raise PlanningError(f"Flow '{flow_name}' has no metadata in registry")
         
-        # Get flow description from metadata
+        input_model = flow_metadata.input_model
+        if not input_model:
+            raise PlanningError(f"Flow '{flow_name}' has no input model defined")
+            
+        # Get flow description
         flow_description = flow_metadata.description
         
-        # Get input model directly from flow metadata
-        input_model = flow_metadata.input_model            
-        self._logger.debug(f"Using input model: {input_model.__name__}")
-        
-        
-        # Get planning rationale
-        planning_rationale = "No planning rationale available"
-        if planning_result and "metadata" in planning_result:
-            metadata = planning_result["metadata"]
-            if isinstance(metadata, dict) and "reasoning" in metadata:
-                planning_rationale = metadata["reasoning"]
-        
-        # Get execution history
-        execution_history_text = "No execution history available"
-        if hasattr(state, "execution_history") and state.execution_history:
-            execution_history = state.execution_history
-            execution_history_text = "\n".join([f"{i+1}. {entry}" for i, entry in enumerate(execution_history)])
-        elif hasattr(state, "user_messages") and state.user_messages:
+        # Get input schema using the model's schema method
+        input_schema = ""
+        try:
+            # Use the improved schema utility
+            input_schema = model_to_simple_json_schema(input_model)
+        except Exception as e:
+            self._logger.warning(f"Failed to get schema for {input_model.__name__}: {str(e)}")
+            # Fallback to string representation
+            input_schema = str(input_model.__name__)
+            
+        # Format execution history 
+        execution_history_text = ""
+        if state.execution_history:
             history_items = []
-            for i, msg in enumerate(state.user_messages):
-                history_items.append(f"User {i+1}: {msg}")
-                if hasattr(state, "system_messages") and i < len(state.system_messages):
-                    history_items.append(f"System {i+1}: {state.system_messages[i]}")
+            for i, entry in enumerate(state.execution_history):
+                if isinstance(entry, dict):
+                    flow = entry.get('flow_name', 'unknown')
+                    status = entry.get('status', 'unknown')
+                    cycle = entry.get('cycle', 0)
+                    history_items.append(f"{i+1}. Cycle {cycle}: Executed {flow} with status {status}")
             execution_history_text = "\n".join(history_items)
-        
+        else:
+            execution_history_text = "No execution history available"
+            
+        # Get planning rationale
+        planning_rationale = ""
+        try:
+            if isinstance(planning_result, dict) and "reasoning" in planning_result:
+                reasoning = planning_result["reasoning"]
+                if isinstance(reasoning, dict):
+                    planning_rationale = reasoning.get("explanation", "")
+            elif hasattr(planning_result, "reasoning") and planning_result.reasoning:
+                planning_rationale = planning_result.reasoning.explanation
+        except Exception as e:
+            self._logger.warning(f"Failed to extract planning rationale: {str(e)}")
+            planning_rationale = "No planning rationale available"
+            
         # Get relevant memories
         relevant_memories_text = "No relevant memories available"
         if memory_context and self.parent and hasattr(self.parent, "_memory") and self.parent._memory:
@@ -315,8 +324,8 @@ class BasePlanning(BaseComponent, PlanningInterface):
                 relevant_memories = await memory.retrieve_relevant(
                     query=state.task_description,
                     context=memory_context,
-                        limit=5
-                    )
+                    limit=5
+                )
                 
                 if relevant_memories:
                     memory_items = []
@@ -325,16 +334,6 @@ class BasePlanning(BaseComponent, PlanningInterface):
                     relevant_memories_text = "\n".join(memory_items)
             except Exception as e:
                 self._logger.warning(f"Error retrieving relevant memories: {str(e)}")
-        
-        # Get input schema using the model's schema method
-        input_schema = ""
-        try:
-            # Use the improved schema utility
-            input_schema = model_to_simple_json_schema(input_model)
-        except Exception as e:
-            self._logger.warning(f"Failed to get schema for {input_model.__name__}: {str(e)}")
-            # Fallback to string representation
-            input_schema = str(input_model.__name__)
         
         # Prepare variables for prompt
         prompt_variables = {
@@ -347,32 +346,7 @@ class BasePlanning(BaseComponent, PlanningInterface):
             "relevant_memories_text": relevant_memories_text
         }
         
-        self._logger.debug(f"Generating inputs for flow '{flow_name}' using structured generation")
-        
-        # Ensure input generation template is loaded
-        if not hasattr(self, "_input_generation_template") or not self._input_generation_template:
-            raise NotInitializedError(
-                component_name=self._name,
-                operation="generate_inputs",
-                details="Input generation template is not initialized"
-            )
-        
-        # Ensure we have a model name from config
-        if not hasattr(self, "config") or not hasattr(self.config, "model_name"):
-            raise PlanningError("Model name not found in planner configuration")
-        
-        # Log the prompt template and variables
-        self._logger.info("=============== INPUT GENERATION TEMPLATE ===============")
-        if hasattr(self._input_generation_template, 'template'):
-            self._logger.info(self._input_generation_template.template[:500] + "..." if len(self._input_generation_template.template) > 500 else self._input_generation_template.template)
-        self._logger.info("=============== PROMPT VARIABLES ===============")
-        self._logger.info(f"task_description: {prompt_variables['task_description'][:100]}...")
-        self._logger.info(f"flow_name: {prompt_variables['flow_name']}")
-        self._logger.info(f"flow_description: {prompt_variables['flow_description'][:100]}...")
-        self._logger.info(f"input_schema: {prompt_variables['input_schema'][:200]}...")
-        self._logger.info("================================================")
-        
-        # Generate structured input directly using input_model
+        # Generate structured input
         inputs = await self.llm_provider.generate_structured(
             prompt=self._input_generation_template,
             output_type=input_model,
@@ -380,11 +354,8 @@ class BasePlanning(BaseComponent, PlanningInterface):
             prompt_variables=prompt_variables
         )
         
-        # Convert to dict
-        inputs_dict = inputs.model_dump()
-        
-        self._logger.info(f"Generated inputs for flow '{flow_name}': {str(inputs_dict)[:100]}...")
-        return inputs_dict
+        self._logger.info(f"Generated inputs for flow '{flow_name}': {str(inputs.model_dump())[:100]}...")
+        return inputs
 
 
 class AgentPlanner(BasePlanning):
@@ -560,7 +531,7 @@ class AgentPlanner(BasePlanning):
         planning_result: Dict[str, Any],
         memory_context: str,
         flow: Optional[Any] = None
-    ) -> Dict[str, Any]:
+    ) -> BaseModel:
         """Generate inputs for a flow based on state and planning result.
         
         Args:
@@ -571,7 +542,7 @@ class AgentPlanner(BasePlanning):
             flow: Flow instance (optional)
             
         Returns:
-            Generated inputs for the flow as a dictionary
+            Generated input model for the flow as a Pydantic BaseModel instance
             
         Raises:
             PlanningError: If input generation fails
@@ -674,8 +645,5 @@ class AgentPlanner(BasePlanning):
             prompt_variables=prompt_variables
         )
         
-        # Convert to dict
-        inputs_dict = inputs.model_dump()
-        
-        self._logger.info(f"Generated inputs for flow '{flow_name}': {str(inputs_dict)[:100]}...")
-        return inputs_dict
+        self._logger.info(f"Generated inputs for flow '{flow_name}': {str(inputs.model_dump())[:100]}...")
+        return inputs

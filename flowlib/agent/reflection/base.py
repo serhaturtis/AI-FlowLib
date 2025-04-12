@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional
 # Import prompts to ensure registration
 from .prompts import (
     DefaultReflectionPrompt,
-    ConversationalReflectionPrompt,
     TaskCompletionReflectionPrompt
 )
 
@@ -381,7 +380,7 @@ class AgentReflection(BaseComponent, ReflectionInterface):
                 "flow_status": reflection_input.flow_status,
                 "flow_inputs": flow_inputs_formatted,
                 "flow_result": flow_result_formatted,
-                "execution_history": reflection_input.execution_history_text,
+                "execution_history_text": reflection_input.execution_history_text,
                 "planning_rationale": reflection_input.planning_rationale,
                 "state_summary": reflection_input.state_summary,
                 "current_progress": reflection_input.progress

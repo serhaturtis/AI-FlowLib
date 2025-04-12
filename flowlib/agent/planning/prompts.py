@@ -24,6 +24,7 @@ class DefaultPlanningPrompt:
     
     Current state:
     - Task: {{task_description}}
+    - Cycle: {{cycle}}
     
     Execution history:
     {{execution_history_text}}
@@ -55,6 +56,7 @@ class ConversationalPlanningPrompt:
     Your task is to select the most appropriate flow to execute next based on the user's message and available flows.
     
     User message: {{task_description}}
+    Current cycle: {{cycle}}
     
     Available flows:
     {{available_flows_text}}

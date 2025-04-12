@@ -21,6 +21,9 @@ class DefaultReflectionPrompt:
     Flow name: {{flow_name}}
     
     Planning rationale: {{planning_rationale}}
+
+    Flow status:
+    {{flow_status}}
     
     Flow inputs:
     {{flow_inputs}}
@@ -30,6 +33,12 @@ class DefaultReflectionPrompt:
     
     Execution history:
     {{execution_history_text}}
+
+    State summary:
+    {{state_summary}}
+
+    Current progress:
+    {{current_progress}}
     
     Analyze the execution results and reflect on the following:
     1. Was the execution successful? Why or why not?
@@ -37,44 +46,6 @@ class DefaultReflectionPrompt:
     3. Were the inputs well-formed and appropriate?
     4. Is the task complete or are additional steps needed?
     5. What could be improved in future planning cycles?
-    """
-    config = {
-        "max_tokens": 1024,
-        "temperature": 0.3,
-        "top_p": 0.95,
-        "top_k": 40
-    }
-
-
-@prompt("conversational_reflection")
-class ConversationalReflectionPrompt:
-    """Reflection prompt optimized for conversational agents."""
-    
-    template = """
-    You are a reflection system for a conversational agent.
-    
-    Your task is to analyze the conversation response and provide insights to improve future interactions.
-    
-    User message: {{task_description}}
-    Flow name: {{flow_name}}
-    
-    Planning rationale: {{planning_rationale}}
-    
-    Response inputs:
-    {{flow_inputs}}
-    
-    Generated response:
-    {{flow_result}}
-    
-    Conversation history:
-    {{execution_history_text}}
-    
-    Analyze the conversation and reflect on the following:
-    1. Was the response relevant and helpful to the user's message?
-    2. Did the response address all aspects of the user's question or request?
-    3. Was the conversation flow natural and engaging?
-    4. Is further clarification or additional information needed?
-    5. How could future responses be improved?
     """
     config = {
         "max_tokens": 1024,

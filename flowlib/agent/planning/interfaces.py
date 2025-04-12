@@ -6,6 +6,7 @@ consistent method signatures across different planning implementations.
 """
 
 from typing import Dict, Any, Optional, Protocol, List, Type
+from pydantic import BaseModel
 from ..planning.models import (
     PlanningResult,
     PlanningValidation,
@@ -60,7 +61,7 @@ class PlanningInterface(Protocol):
         planning_result: Dict[str, Any],
         memory_context: str,
         flow: Optional[Any] = None
-    ) -> Dict[str, Any]:
+    ) -> BaseModel:
         """Generate inputs for a flow based on state and planning result.
         
         This method requires access to a flow registry and model provider,
@@ -74,7 +75,7 @@ class PlanningInterface(Protocol):
             flow: Flow instance (optional)
             
         Returns:
-            Generated inputs for the flow as a dictionary
+            Generated input model for the flow as a Pydantic BaseModel instance
             
         Raises:
             PlanningError: If input generation fails

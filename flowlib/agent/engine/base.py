@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ..core.base import BaseComponent
+from ..planning.models import ExecutionContext, TaskState, MessageHistory, ErrorLog
 from ..core.errors import ExecutionError, PlanningError, ReflectionError, NotInitializedError, StatePersistenceError
 from .interfaces import EngineInterface
 from ..models.config import EngineConfig
@@ -22,7 +23,9 @@ from ..reflection.models import ReflectionResult
 from ..planning.interfaces import PlanningInterface
 from ..memory.interfaces import MemoryInterface
 from ..reflection.interfaces import ReflectionInterface
+from ..memory.models import MemoryStoreRequest
 from ...core.context import Context
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +152,13 @@ class AgentEngine(BaseComponent, EngineInterface):
                     logger.info("No flow selected by planner, continuing to next cycle")
                     return True
             
-            # Generate inputs for the flow
+            # Generate inputs for the flow (as BaseModel)
             inputs = await self._generate_inputs(state, cycle_context, selected_flow, result)
             
-            # Execute the flow
+            # Execute the flow with the BaseModel inputs
             flow_result = await self.execute_flow(selected_flow, inputs, state)
             
-            # Reflect on results
+            # Reflect on results using BaseModel inputs
             reflection_result = await self._reflect_on_results(state, cycle_context, selected_flow, inputs, flow_result)
             
             # Check if reflection indicated completion
@@ -229,21 +232,8 @@ class AgentEngine(BaseComponent, EngineInterface):
             
         Returns:
             Serializable dictionary
-        """
-        if not result:
-            return {"status": "unknown", "data": None}
-        
-        # Try to convert to dict using model_dump (the standard method)
-        if hasattr(result, "model_dump") and callable(result.model_dump):
-            return result.model_dump()
-        
-        # Fallback for non-Pydantic objects
-        if hasattr(result, "to_dict") and callable(result.to_dict):
-            return result.to_dict()
-        elif hasattr(result, "__dict__"):
-            return result.__dict__
-        else:
-            return {"status": str(result.status), "data": result.data}
+        """        
+        return result.model_dump()
     
     async def _plan_next_action(self, state: AgentState, context: str) -> PlanningResult:
         """Plan the next action to take.
@@ -259,11 +249,7 @@ class AgentEngine(BaseComponent, EngineInterface):
             PlanningError: If planning fails
         """
         try:
-            logger.debug("Planning next action")
-            
-            # Create execution context from state
-            from ..planning.models import ExecutionContext, TaskState, MessageHistory, ErrorLog
-            
+            logger.debug("Planning next action")            
             # Create task state
             task_state = TaskState(
                 task_id=state.task_id,
@@ -299,8 +285,6 @@ class AgentEngine(BaseComponent, EngineInterface):
             
             logger.debug(f"Planning result: {planning_result}")
             
-            # Store planning result in memory using interface
-            from ..memory.models import MemoryStoreRequest
             store_request = MemoryStoreRequest(
                 key="planning_result",
                 value=planning_result.model_dump(),
@@ -329,7 +313,7 @@ class AgentEngine(BaseComponent, EngineInterface):
         context: str,
         flow_name: str,
         planning_result: PlanningResult
-    ) -> Dict[str, Any]:
+    ) -> BaseModel:
         """Generate inputs for a flow.
         
         Args:
@@ -339,7 +323,7 @@ class AgentEngine(BaseComponent, EngineInterface):
             planning_result: Result from the planning phase
             
         Returns:
-            Generated inputs for the flow
+            Generated input model for the flow as a Pydantic BaseModel instance
             
         Raises:
             PlanningError: If input generation fails
@@ -366,7 +350,6 @@ class AgentEngine(BaseComponent, EngineInterface):
             logger.debug(f"Generated inputs: {inputs}")
             
             # Store inputs in memory using interface
-            from ..memory.models import MemoryStoreRequest
             store_request = MemoryStoreRequest(
                 key="flow_inputs",
                 value=inputs,
@@ -393,7 +376,7 @@ class AgentEngine(BaseComponent, EngineInterface):
     async def execute_flow(
         self,
         flow_name: str,
-        inputs: Any,
+        inputs: BaseModel,
         state: Optional[AgentState] = None
     ) -> FlowResult:
         """
@@ -437,17 +420,8 @@ class AgentEngine(BaseComponent, EngineInterface):
             # Get the input model class from metadata
             input_model_cls = flow_metadata.input_model
             
-            # Convert inputs to proper Pydantic model instance if it's a dict
-            if isinstance(inputs, dict):
-                try:
-                    inputs = input_model_cls(**inputs)
-                except Exception as e:
-                    raise ExecutionError(
-                        message=f"Failed to convert inputs to {input_model_cls.__name__}: {str(e)}",
-                        flow=flow_name,
-                        cause=e
-                    ) from e
-            elif not isinstance(inputs, input_model_cls):
+            # Verify input type
+            if not isinstance(inputs, input_model_cls):
                 raise ExecutionError(
                     message=f"Inputs must be an instance of {input_model_cls.__name__}, got {type(inputs).__name__}",
                     flow=flow_name
@@ -465,7 +439,7 @@ class AgentEngine(BaseComponent, EngineInterface):
                 self._update_state_with_result(
                     state=state,
                     flow_name=flow_name,
-                    inputs=inputs.model_dump() if hasattr(inputs, "model_dump") else inputs,
+                    inputs=inputs,
                     flow_result=result,
                     elapsed_time=elapsed_time
                 )
@@ -506,7 +480,7 @@ class AgentEngine(BaseComponent, EngineInterface):
         self, 
         state: AgentState, 
         flow_name: str, 
-        inputs: Dict[str, Any], 
+        inputs: BaseModel, 
         flow_result: FlowResult,
         elapsed_time: float
     ) -> None:
@@ -515,7 +489,7 @@ class AgentEngine(BaseComponent, EngineInterface):
         Args:
             state: Agent state to update
             flow_name: Name of the executed flow
-            inputs: Inputs used for the flow
+            inputs: Inputs used for the flow (BaseModel)
             flow_result: Result from flow execution
             elapsed_time: Execution time in seconds
             
@@ -526,10 +500,13 @@ class AgentEngine(BaseComponent, EngineInterface):
             # Serialize result for state storage
             serialized_result = self._get_serializable_result(flow_result)
             
+            # Convert inputs to serializable dict
+            inputs_dict = inputs.model_dump() if hasattr(inputs, "model_dump") else inputs.__dict__
+            
             # Update state with standard method
             state.add_to_history(
                 flow_name=flow_name,
-                inputs=inputs,
+                inputs=inputs_dict,
                 result=serialized_result,
                 elapsed_time=elapsed_time
             )
@@ -571,7 +548,7 @@ class AgentEngine(BaseComponent, EngineInterface):
         state: AgentState,
         context: str,
         flow_name: str,
-        flow_inputs: Dict[str, Any],
+        flow_inputs: BaseModel,
         flow_result: FlowResult
     ) -> ReflectionResult:
         """Reflect on the results of flow execution.
@@ -579,8 +556,8 @@ class AgentEngine(BaseComponent, EngineInterface):
         Args:
             state: Current agent state
             context: Memory context for this cycle
-            flow_name: Name of the executed flow
-            flow_inputs: Inputs that were used
+            flow_name: Name of the flow that was executed
+            flow_inputs: Inputs that were used (Pydantic BaseModel)
             flow_result: Result from flow execution
             
         Returns:
@@ -604,7 +581,6 @@ class AgentEngine(BaseComponent, EngineInterface):
             logger.debug(f"Reflection result: {reflection_result}")
             
             # Store reflection result in memory using interface
-            from ..memory.models import MemoryStoreRequest
             store_request = MemoryStoreRequest(
                 key="reflection_result",
                 value=reflection_result,

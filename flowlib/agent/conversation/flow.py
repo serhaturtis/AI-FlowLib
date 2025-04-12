@@ -61,7 +61,7 @@ class ConversationExecuteInput(BaseModel):
 class ConversationPrompt:
     """Prompt template for conversation responses."""
     
-    template = """You are a helpful AI assistant. Respond to the following message from the user:
+    template = """You are a helpful AI assistant. {{persona}}Respond to the following message from the user in {{language}}:
 
 User message: {{message}}
 
@@ -116,11 +116,17 @@ class ConversationFlow(Flow):
             persona = input_data.persona
             context = input_data.context
             
+            # Format the persona as an additional context string if provided
+            persona_str = f"Acting as {persona}. " if persona else ""
+            
+            # Use default language if not provided
+            language_str = language or "English"
+            
             # Create prompt variables
             prompt_vars = {
                 "message": message,
-                "language": language or "English",
-                "persona": persona or "helpful assistant",
+                "language": language_str,
+                "persona": persona_str,
                 "context_text": self._format_context(context) if context else "",
             }
             
