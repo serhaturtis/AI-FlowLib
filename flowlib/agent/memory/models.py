@@ -61,6 +61,7 @@ class MemorySearchRequest(BaseModel):
     threshold: Optional[float] = Field(None, description="Minimum similarity threshold (0.0-1.0)")
     sort_by: Optional[str] = Field(None, description="Field to sort results by (relevance, created_at, updated_at)")
     search_type: str = Field("hybrid", description="Type of search: 'semantic', 'keyword', or 'hybrid'")
+    metadata_filter: Optional[Dict[str, Any]] = Field(None, description="Filter results based on metadata key-value pairs")
 
 
 class MemorySearchResult(BaseModel):

@@ -6,7 +6,8 @@ from ...core.context import Context
 
 @flow(
     name="SemanticRecallFlow",
-    description="Flow for semantic-based memory recall that matches based on meaning"
+    description="Flow for semantic-based memory recall that matches based on meaning",
+    is_infrastructure=True
 )
 class SemanticRecallFlow(BaseRecallFlow):
     """Flow for semantic-based memory recall"""

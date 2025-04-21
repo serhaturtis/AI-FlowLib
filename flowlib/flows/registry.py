@@ -270,6 +270,36 @@ class StageRegistry:
         """
         return self._flow_instances.copy()
     
+    def get_agent_selectable_flows(self) -> Dict[str, Any]:
+        """
+        Get flow instances that can be selected by the agent.
+        
+        This method filters out infrastructure flows that shouldn't be directly 
+        selectable by the agent during planning.
+        
+        Returns:
+            Dict[str, Any]: Dictionary mapping flow names to flow instances where is_infrastructure=False.
+        """
+        selectable_flows = {}
+        for flow_name, flow_instance in self._flow_instances.items():
+            # Check if the flow_instance has is_infrastructure attribute or metadata
+            is_infrastructure = False
+            
+            # Check the direct attribute first
+            if hasattr(flow_instance, "is_infrastructure"):
+                is_infrastructure = flow_instance.is_infrastructure
+            # Then check in flow metadata if available
+            elif hasattr(flow_instance, "__flow_metadata__"):
+                metadata = flow_instance.__flow_metadata__
+                is_infrastructure = metadata.get("is_infrastructure", False)
+                
+            # Add to result if not an infrastructure flow
+            if not is_infrastructure:
+                selectable_flows[flow_name] = flow_instance
+                
+        logger.debug(f"Found {len(selectable_flows)} agent-selectable flows")
+        return selectable_flows
+    
     def clear(self) -> None:
         """Clear all registered stages and flows."""
         self._flow_stages.clear()

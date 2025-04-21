@@ -6,7 +6,7 @@ establishing a common interface for entity and relationship operations.
 
 import logging
 from abc import abstractmethod
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Generic, TypeVar
 
 from ..base import Provider
 from ...flows.base import FlowSettings
@@ -28,8 +28,10 @@ class GraphDBProviderSettings(FlowSettings):
     timeout_seconds: float = 30.0
     max_batch_size: int = 100
 
+# Define Settings TypeVar based on GraphDBProviderSettings
+SettingsType = TypeVar('SettingsType', bound=GraphDBProviderSettings)
 
-class GraphDBProvider(Provider[GraphDBProviderSettings]):
+class GraphDBProvider(Provider[GraphDBProviderSettings], Generic[SettingsType]):
     """Base class for graph database providers.
     
     This class defines the common interface for all graph database providers,
@@ -240,6 +242,30 @@ class GraphDBProvider(Provider[GraphDBProviderSettings]):
             entity_ids.append(entity_id)
         return entity_ids
     
+    @abstractmethod
+    async def search_entities(
+        self,
+        query: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 10
+    ) -> List[Entity]:
+        """Search for entities based on criteria.
+        
+        Args:
+            query: Optional text query to match against entity ID or attributes.
+            entity_type: Optional entity type to filter by.
+            tags: Optional list of tags to filter by.
+            limit: Maximum number of entities to return.
+            
+        Returns:
+            List of matching Entity objects.
+            
+        Raises:
+            ProviderError: If the search operation fails.
+        """
+        raise NotImplementedError("Subclasses must implement search_entities()")
+
     @abstractmethod
     async def remove_relationship(
         self,

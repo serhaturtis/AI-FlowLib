@@ -7,7 +7,8 @@ from ...core.errors import ExecutionError
 
 @flow(
     name="EntityRecallFlow",
-    description="Flow for entity-based memory recall that retrieves information about specific entities"
+    description="Flow for entity-based memory recall that retrieves information about specific entities",
+    is_infrastructure=True
 )
 class EntityRecallFlow(BaseRecallFlow):
     """Flow for entity-based memory recall"""

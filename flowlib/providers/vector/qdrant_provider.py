@@ -5,13 +5,17 @@ for Qdrant, a vector similarity search engine.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union
 import uuid
 
 from ...core.errors import ProviderError, ErrorContext
 from .base import VectorDBProvider, VectorDBProviderSettings, VectorMetadata, SimilaritySearchResult
 from ..decorators import provider
 from ..constants import ProviderType
+
+# Import embedding provider base and registry
+from ..embedding.base import EmbeddingProvider
+from ..registry import provider_registry
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,7 @@ class QdrantProviderSettings(VectorDBProviderSettings):
         grpc_port: Qdrant gRPC port (if different from REST port)
         prefer_local: Whether to use local mode if available
         path: Path to local database (for local mode)
+        embedding_provider_name: Name of the embedding provider
     """
     
     # Qdrant connection settings
@@ -66,36 +71,39 @@ class QdrantProviderSettings(VectorDBProviderSettings):
     # Local mode settings
     prefer_local: bool = False
     path: Optional[str] = None
+    embedding_provider_name: Optional[str] = "default_embedding"
 
+
+SettingsType = TypeVar('SettingsType', bound=QdrantProviderSettings)
 
 @provider(provider_type=ProviderType.VECTOR_DB, name="qdrant")
-class QdrantProvider(VectorDBProvider):
+class QdrantProvider(VectorDBProvider[QdrantProviderSettings]):
     """Qdrant implementation of the VectorDBProvider.
     
     This provider implements vector storage, retrieval, and similarity search
     using Qdrant, a vector similarity search engine.
     """
     
-    def __init__(self, name: str = "qdrant", settings: Optional[QdrantProviderSettings] = None):
+    def __init__(self, name: str = "qdrant", settings: Optional[Union[Dict[str, Any], QdrantProviderSettings]] = None):
         """Initialize Qdrant provider.
         
         Args:
             name: Unique provider name
             settings: Optional provider settings
         """
-        # Create settings first to avoid issues with _default_settings() method
-        settings = settings or QdrantProviderSettings(host="localhost", port=6333)
-        
-        # Pass explicit settings to parent class
+        # Initialize VectorDBProvider base - it handles settings creation/assignment
         super().__init__(name=name, settings=settings)
         
+        # Base class now holds self.settings as QdrantProviderSettings object
+
         # Store settings for local use
-        self._settings = settings
+        self._settings = self.settings
         self._client = None
         self._collection_info = {}
+        self._embedding_provider: Optional[EmbeddingProvider] = None
         
     async def _initialize(self) -> None:
-        """Initialize Qdrant client.
+        """Initialize Qdrant client and embedding provider.
         
         Raises:
             ProviderError: If initialization fails
@@ -139,6 +147,22 @@ class QdrantProvider(VectorDBProvider):
                 except Exception as e:
                     logger.warning(f"Default collection not found: {self._settings.collection_name}. It will be created when needed.")
             
+            # Get and initialize the embedding provider
+            if self._settings.embedding_provider_name:
+                self._embedding_provider = await provider_registry.get(
+                    ProviderType.EMBEDDING,
+                    self._settings.embedding_provider_name
+                )
+                if not self._embedding_provider:
+                    raise ProviderError(f"Embedding provider '{self._settings.embedding_provider_name}' not found")
+                # Ensure it's initialized (registry should handle this, but double-check)
+                if not self._embedding_provider.initialized:
+                    await self._embedding_provider.initialize()
+                logger.info(f"Using embedding provider: {self._settings.embedding_provider_name}")
+            else:
+                # Unlike Chroma, Qdrant requires vectors, so an external embedding provider is mandatory
+                raise ConfigurationError("embedding_provider_name must be specified in Qdrant settings")
+            
         except Exception as e:
             self._client = None
             raise ProviderError(
@@ -158,6 +182,7 @@ class QdrantProvider(VectorDBProvider):
             self._client.close()
             self._client = None
             self._collection_info = {}
+            self._embedding_provider = None
             logger.info("Closed Qdrant connection")
     
     def _get_distance_metric(self, metric: Optional[str]) -> models.Distance:
@@ -336,7 +361,7 @@ class QdrantProvider(VectorDBProvider):
                             vectors: List[List[float]], 
                             metadata: List[VectorMetadata], 
                             collection_name: Optional[str] = None) -> List[str]:
-        """Insert vectors into Qdrant.
+        """Insert multiple vectors into Qdrant.
         
         Args:
             vectors: List of vector embeddings
@@ -352,56 +377,54 @@ class QdrantProvider(VectorDBProvider):
         if not self._client:
             await self.initialize()
             
-        # Get collection name
-        coll_name = self._get_collection_name(collection_name)
+        collection_name = self._get_collection_name(collection_name)
         
-        try:
-            # Generate IDs if not provided
-            ids = []
-            for i, meta in enumerate(metadata):
-                if meta.id:
-                    ids.append(meta.id)
-                else:
-                    ids.append(str(uuid.uuid4()))
+        # Ensure collection exists (or check dimension consistency)
+        if collection_name not in self._collection_info:
+             # Check dimension consistency if possible before raising error
+             if vectors and self._embedding_provider and hasattr(self._embedding_provider, 'embedding_dim'):
+                 expected_dim = self._embedding_provider.embedding_dim
+                 if expected_dim and len(vectors[0]) != expected_dim:
+                     raise ProviderError(
+                         f"Vector dimension mismatch. Expected {expected_dim}, got {len(vectors[0])}.",
+                         provider_name=self.name,
+                         context=ErrorContext.create(collection_name=collection_name)
+                     )
+
+             # If collection doesn't exist, raise error (Qdrant upsert doesn't auto-create)
+             raise ProviderError(
+                 f"Collection '{collection_name}' does not exist. Create it first.",
+                 provider_name=self.name,
+                 context=ErrorContext.create(collection_name=collection_name)
+             )
+
+        # Prepare points for Qdrant
+        points = []
+        for i, vec in enumerate(vectors):
+            # Convert metadata to payload
+            payload = self._metadata_to_payload(metadata[i]) if i < len(metadata) else {}
             
-            # Prepare points
-            points = []
-            for i, vec in enumerate(vectors):
-                # Convert metadata to payload
-                payload = self._metadata_to_payload(metadata[i]) if i < len(metadata) else {}
-                
-                # Create point
-                points.append(
-                    models.PointStruct(
-                        id=ids[i],
-                        vector=vec,
-                        payload=payload
-                    )
+            # Create point
+            points.append(
+                models.PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=vec,
+                    payload=payload
                 )
-            
-            # Insert in batches of 100
-            batch_size = 100
-            for i in range(0, len(points), batch_size):
-                batch = points[i:i + batch_size]
-                self._client.upsert(
-                    collection_name=coll_name,
-                    points=batch
-                )
-            
-            logger.info(f"Inserted {len(vectors)} vectors into Qdrant collection: {coll_name}")
-            
-            return ids
-            
-        except Exception as e:
-            raise ProviderError(
-                message=f"Failed to insert vectors into Qdrant: {str(e)}",
-                provider_name=self.name,
-                context=ErrorContext.create(
-                    collection_name=coll_name,
-                    vector_count=len(vectors)
-                ),
-                cause=e
             )
+        
+        # Insert in batches of 100
+        batch_size = 100
+        for i in range(0, len(points), batch_size):
+            batch = points[i:i + batch_size]
+            self._client.upsert(
+                collection_name=collection_name,
+                points=batch
+            )
+        
+        logger.info(f"Inserted {len(vectors)} vectors into Qdrant collection: {collection_name}")
+        
+        return [str(point.id) for point in points]
     
     async def get_vectors(self, 
                          ids: List[str], 
@@ -578,21 +601,16 @@ class QdrantProvider(VectorDBProvider):
         if not self._client:
             await self.initialize()
             
-        # Get collection name
-        coll_name = self._get_collection_name(collection_name)
+        collection_name = self._get_collection_name(collection_name)
+        qdrant_filter = self._filter_to_qdrant(filter)
         
         try:
-            # Convert filter
-            qdrant_filter = self._filter_to_qdrant(filter)
-            
-            # Perform search
+            # Perform search using query vector
             search_result = self._client.search(
-                collection_name=coll_name,
+                collection_name=collection_name,
                 query_vector=vector,
-                limit=k,
-                with_vectors=True,
-                with_payload=True,
-                filter=qdrant_filter
+                query_filter=qdrant_filter,
+                limit=k
             )
             
             # Parse results
@@ -619,7 +637,7 @@ class QdrantProvider(VectorDBProvider):
                 message=f"Failed to search vectors in Qdrant: {str(e)}",
                 provider_name=self.name,
                 context=ErrorContext.create(
-                    collection_name=coll_name,
+                    collection_name=collection_name,
                     k=k,
                     filter=filter
                 ),
@@ -805,4 +823,50 @@ class QdrantProvider(VectorDBProvider):
                 provider_name=self.name,
                 context=ErrorContext.create(collection_name=coll_name),
                 cause=e
-            ) 
+            )
+    
+    async def embed_and_search(self, 
+                               query_text: str, 
+                               k: int = 10, 
+                               collection_name: Optional[str] = None,
+                               filter: Optional[Dict[str, Any]] = None) -> List[SimilaritySearchResult]:
+        """Generate embedding for query text and search Qdrant.
+        
+        Args:
+            query_text: Text to search for
+            k: Number of results to return
+            collection_name: Collection name
+            filter: Metadata filter
+            
+        Returns:
+            List of search results
+            
+        Raises:
+            ProviderError: If embedding or search fails
+        """
+        if not self._embedding_provider:
+            raise ProviderError(
+                "Embedding provider not available for text search.", 
+                provider_name=self.name
+            )
+            
+        # Generate embedding for the query text
+        try:
+            embedding_list = await self._embedding_provider.embed(query_text)
+            if not embedding_list:
+                raise ProviderError("Failed to generate embedding for query text.")
+            query_vector = embedding_list[0] # Use the first (only) embedding
+        except Exception as e:
+            raise ProviderError(
+                f"Failed to generate query embedding: {e}", 
+                provider_name=self.name, 
+                cause=e
+            )
+            
+        # Perform search using the generated vector
+        return await self.search_by_vector(
+            vector=query_vector,
+            k=k,
+            collection_name=collection_name,
+            filter=filter
+        ) 

@@ -79,8 +79,4 @@ def storage_provider(name: str, **metadata):
 
 def message_queue_provider(name: str, **metadata):
     """Register a class as a message queue provider factory."""
-    return provider(name, ProviderType.MESSAGE_QUEUE, **metadata)
-
-def conversation_provider(name: str, **metadata):
-    """Register a class as a conversation provider factory."""
-    return provider(name, ProviderType.CONVERSATION, **metadata) 
+    return provider(name, ProviderType.MESSAGE_QUEUE, **metadata) 

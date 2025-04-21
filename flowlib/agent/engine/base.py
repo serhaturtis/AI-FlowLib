@@ -11,7 +11,6 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ..core.base import BaseComponent
-from ..planning.models import ExecutionContext, TaskState, MessageHistory, ErrorLog
 from ..core.errors import ExecutionError, PlanningError, ReflectionError, NotInitializedError, StatePersistenceError
 from .interfaces import EngineInterface
 from ..models.config import EngineConfig
@@ -249,42 +248,12 @@ class AgentEngine(BaseComponent, EngineInterface):
             PlanningError: If planning fails
         """
         try:
-            logger.debug("Planning next action")            
-            # Create task state
-            task_state = TaskState(
-                task_id=state.task_id,
-                task_description=state.task_description,
-                cycle=state.cycles,
-                progress=state.progress,
-                is_complete=state.is_complete,
-                completion_reason=state.completion_reason,
-                last_updated=datetime.now()
-            )
+            logger.debug("Planning next action")
             
-            # Create message history
-            messages = MessageHistory()
-            for msg in state.user_messages:
-                messages.user_messages.append(MessageHistory.Message(content=msg))
-            for msg in state.system_messages:
-                messages.system_messages.append(MessageHistory.Message(content=msg))
+            # Call planner with AgentState directly
+            planning_result = await self._planner.plan(context=state)
             
-            # Create error log
-            errors = ErrorLog()
-            for err in state.errors:
-                errors.errors.append(ErrorLog.ErrorEntry(message=err, source="agent"))
-            
-            # Create execution context
-            execution_context = ExecutionContext(
-                state=task_state,
-                messages=messages,
-                errors=errors
-            )
-            
-            # Call planner using standard interface
-            planning_result = await self._planner.plan(context=execution_context)
-            
-            logger.debug(f"Planning result: {planning_result}")
-            
+            # Store planning result in memory
             store_request = MemoryStoreRequest(
                 key="planning_result",
                 value=planning_result.model_dump(),
@@ -296,6 +265,8 @@ class AgentEngine(BaseComponent, EngineInterface):
                 }
             )
             await self._memory.store_with_model(store_request)
+            
+            logger.debug(f"Planning result: {planning_result}")
             
             # Return the PlanningResult
             return planning_result

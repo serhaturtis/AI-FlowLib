@@ -6,7 +6,7 @@ using graph database providers.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Union, Set, Tuple
+from typing import Any, Dict, List, Optional, Union, Set, Tuple, Generic, TypeVar
 
 from ...core.context import Context
 from ...providers.constants import ProviderType
@@ -21,11 +21,14 @@ from .models import (
     MemorySearchRequest,
     MemorySearchResult
 )
+from ...providers.graph.base import GraphDBProvider, GraphDBProviderSettings
 
 logger = logging.getLogger(__name__)
 
+# Define Settings TypeVar based on GraphDBProviderSettings
+SettingsType = TypeVar('SettingsType', bound=GraphDBProviderSettings)
 
-class KnowledgeBaseMemory(BaseMemory):
+class KnowledgeBaseMemory(BaseMemory, Generic[SettingsType]):
     """Graph-based knowledge memory system.
     
     This component provides a structured knowledge base using graph database providers
@@ -34,57 +37,38 @@ class KnowledgeBaseMemory(BaseMemory):
     
     def __init__(
         self,
-        provider_name: str = "neo4j",
+        graph_provider: GraphDBProvider,
         name: str = "knowledge_memory"
     ):
         """Initialize knowledge base memory.
         
         Args:
-            provider_name: Name of the graph database provider to use
+            graph_provider: Graph database provider instance
             name: Component name
         """
         super().__init__(name)
         
-        self._provider_name = provider_name
-        self._graph_provider = None
+        if not graph_provider:
+            raise ValueError("A GraphDBProvider instance must be provided.")
+            
+        self._graph_provider = graph_provider
+        # Assume provider is already initialized by AgentCore
         
     async def _initialize_impl(self) -> None:
-        """Initialize the knowledge base memory."""
-        # Import here to avoid circular imports
-        from ...providers.registry import provider_registry
-        from ...providers.constants import ProviderType
-        
-        try:
-            # Initialize graph database provider
-            if not self._provider_name:
-                raise MemoryError("No graph database provider specified")
-                
-            self._graph_provider = await provider_registry.get(
-                ProviderType.GRAPH_DB, 
-                self._provider_name
-            )
+        """Initialize the knowledge base memory (verify provider)."""
+        # Provider should be initialized by the caller (AgentCore)
+        if not self._graph_provider or not self._graph_provider.initialized:
+            logger.error(f"Graph provider ('{self._graph_provider.name if self._graph_provider else 'None'}') not initialized before passing to {self.name}.")
+            # Attempt to initialize? Or just raise? Let's raise for stricter control.
+            raise MemoryError(f"Graph provider must be initialized before use in {self.name}")
             
-            if not self._graph_provider:
-                raise ProviderError(f"Graph database provider not found: {self._provider_name}")
+        logger.debug(f"{self.name} initialized using provider: {self._graph_provider.name}")
                 
-            # Initialize the provider if it has its own initialize method
-            if hasattr(self._graph_provider, 'initialize'):
-                await self._graph_provider.initialize()
-                
-            logger.debug(f"Initialized {self.name} with provider={self._provider_name}")
-                
-        except Exception as e:
-            raise MemoryError(f"Failed to initialize knowledge base memory: {str(e)}") from e
-    
     async def _shutdown_impl(self) -> None:
-        """Shutdown knowledge base memory."""
-        # Shutdown graph provider if it has its own shutdown method
-        if self._graph_provider and hasattr(self._graph_provider, 'shutdown'):
-            await self._graph_provider.shutdown()
-            
-        self._graph_provider = None
-        
-        logger.debug(f"Shut down {self.name}")
+        """Shutdown knowledge base memory (delegated to provider)."""
+        # Shutdown is handled by AgentCore managing the provider instance
+        logger.debug(f"{self.name} shutdown (provider managed externally).")
+        pass # Provider lifecycle managed elsewhere
     
     async def _store_impl(
         self, 
@@ -259,122 +243,109 @@ class KnowledgeBaseMemory(BaseMemory):
         limit: int = 10,
         **kwargs
     ) -> List[MemoryItem]:
-        """Search for knowledge in the graph database.
+        """Search for knowledge in the graph database using the provider's search method.
         
         Args:
-            query: Search query
-            context: Context path (used as entity type filter)
-            limit: Maximum number of results
+            query: Search query text.
+            context: Context path (used as fallback entity type filter).
+            limit: Maximum number of results.
             **kwargs: Additional search parameters including:
-                      - relation: Relation type to filter by
-                      - entity_type: Entity type to filter by
-                      - tags: Tags to filter by
+                      - entity_type: Explicit entity type to filter by.
+                      - tags: List of tags to filter by.
+                      - related_to: Entity ID for relationship traversal (optional).
+                      - relation: Relation type for traversal (optional).
+                      - max_depth: Max depth for traversal (optional).
             
         Returns:
-            List of memory items with matching entities
+            List of memory items with matching entities.
+            
+        Raises:
+            MemoryError: If the search fails or the provider is not initialized.
         """
         if not self._graph_provider:
             raise MemoryError("Graph provider not initialized")
             
+        items = []
         try:
-            items = []
-            
-            # Check if we're searching for related entities
+            # --- Handle Traversal Search (if requested) --- 
             if 'related_to' in kwargs:
-                related_to = kwargs['related_to']
+                related_to_id = kwargs['related_to']
                 relation_type = kwargs.get('relation')
+                max_depth = kwargs.get('max_depth', 2)
                 
-                # Get related entities
+                logger.debug(f"Performing traversal search from '{related_to_id}'")
+                # Assuming graph_provider has a 'traverse' method
+                if not hasattr(self._graph_provider, 'traverse'):
+                     raise NotImplementedError(f"Graph provider '{self._graph_provider.name}' does not support traverse.")
+                     
                 related_entities = await self._graph_provider.traverse(
-                    start_id=related_to,
+                    start_id=related_to_id,
                     relation_types=[relation_type] if relation_type else None,
-                    max_depth=kwargs.get('max_depth', 2)
+                    max_depth=max_depth
                 )
                 
-                # Convert to memory items
+                # Convert results to MemoryItem
                 for entity in related_entities[:limit]:
-                    item = MemoryItem(
+                    items.append(MemoryItem(
                         key=entity.id,
-                        value=entity,
+                        value=entity, # Store the full Entity object
                         context=context or 'knowledge',
                         metadata={
+                            'source': 'graph_traversal',
                             'entity_type': entity.type,
                             'tags': entity.tags,
                             'importance': entity.importance
                         }
-                    )
-                    items.append(item)
-                    
+                    ))
+                logger.debug(f"Traversal search found {len(items)} related entities.")
                 return items
-                
-            # Use native query capabilities if possible
+
+            # --- Handle Standard Entity Search --- 
             entity_type = kwargs.get('entity_type', context.split('/')[-1] if context else None)
             tags = kwargs.get('tags', [])
             
-            # Construct query based on provider capabilities
-            if hasattr(self._graph_provider, 'query'):
-                # Simple query language parsing
-                query_parts = []
-                params = {}
-                
-                if query and query.strip():
-                    query_parts.append("MATCH (e:Entity)")
-                    query_parts.append("WHERE e.id CONTAINS $query OR ANY(attr IN KEYS(e.attributes) WHERE e.attributes[attr].value CONTAINS $query)")
-                    params['query'] = query
-                    
-                if entity_type:
-                    if query_parts:
-                        query_parts.append("AND e.type = $type")
-                    else:
-                        query_parts.append("MATCH (e:Entity)")
-                        query_parts.append("WHERE e.type = $type")
-                    params['type'] = entity_type
-                    
-                if tags:
-                    if query_parts:
-                        query_parts.append("AND ANY(tag IN e.tags WHERE tag IN $tags)")
-                    else:
-                        query_parts.append("MATCH (e:Entity)")
-                        query_parts.append("WHERE ANY(tag IN e.tags WHERE tag IN $tags)")
-                    params['tags'] = tags
-                    
-                if not query_parts:
-                    query_parts.append("MATCH (e:Entity)")
-                    
-                query_parts.append(f"RETURN e LIMIT {limit}")
-                
-                # Execute query
-                query_results = await self._graph_provider.query(" ".join(query_parts), params)
-                
-                # Convert to entities and then to memory items
-                for result in query_results:
-                    if 'e' in result and isinstance(result['e'], Entity):
-                        entity = result['e']
-                    elif 'e' in result and isinstance(result['e'], dict):
-                        # Convert dict to Entity
-                        entity = Entity(**result['e'])
-                    else:
-                        continue
-                        
-                    item = MemoryItem(
-                        key=entity.id,
-                        value=entity,
-                        context=context or 'knowledge',
-                        metadata={
-                            'entity_type': entity.type,
-                            'tags': entity.tags,
-                            'importance': entity.importance
-                        }
-                    )
-                    items.append(item)
+            logger.debug(f"Performing entity search with query: '{query}', type: '{entity_type}', tags: {tags}")
+            # Use the provider's dedicated search method
+            if not hasattr(self._graph_provider, 'search_entities'):
+                 raise NotImplementedError(f"Graph provider '{self._graph_provider.name}' does not support search_entities.")
+                 
+            search_results: List[Entity] = await self._graph_provider.search_entities(
+                query=query,
+                entity_type=entity_type,
+                tags=tags,
+                limit=limit
+            )
             
+            # Convert results to MemoryItem
+            for entity in search_results:
+                items.append(MemoryItem(
+                    key=entity.id,
+                    value=entity, # Store the full Entity object
+                    context=context or 'knowledge',
+                    metadata={
+                        'source': 'graph_search',
+                        'entity_type': entity.type,
+                        'tags': entity.tags,
+                        'importance': entity.importance
+                    }
+                ))
+            
+            logger.debug(f"Entity search found {len(items)} entities.")
             return items
             
         except Exception as e:
+            # Avoid leaking raw provider errors unless it's already a MemoryError
+            error_message = f"Failed to search knowledge: {str(e)}"
+            if isinstance(e, MemoryError):
+                 raise e
+            elif isinstance(e, NotImplementedError):
+                 error_message = f"Search failed: {str(e)}"
+                 
             raise MemoryError(
-                f"Failed to search knowledge: {str(e)}",
+                message=error_message,
                 operation="search",
-                context=context
+                context=context,
+                cause=e # Preserve original exception cause
             ) from e
     
     async def add_relationship(
@@ -451,4 +422,26 @@ class KnowledgeBaseMemory(BaseMemory):
                 f"Failed to get entity: {str(e)}",
                 operation="get_entity",
                 key=entity_id
+            ) from e
+
+    # TODO: Add wipe_context to graph provider interface if needed
+    async def _wipe_context_impl(self, context: str) -> None:
+        raise NotImplementedError("Wiping specific context not yet implemented for KnowledgeBaseMemory")
+
+    async def _wipe_all_impl(self) -> None:
+        """Wipe all data from the knowledge base via the provider."""
+        if not self._graph_provider:
+            raise MemoryError("Graph provider not initialized")
+        
+        if not hasattr(self._graph_provider, 'wipe'):
+            raise NotImplementedError(f"Graph provider '{self._graph_provider.name}' does not support wipe operation.")
+            
+        try:
+            logger.warning(f"Wiping ALL data from knowledge base provider: {self._graph_provider.name}")
+            await self._graph_provider.wipe()
+            logger.info(f"Successfully wiped knowledge base: {self._graph_provider.name}")
+        except Exception as e:
+            raise MemoryError(
+                f"Failed to wipe knowledge base: {str(e)}",
+                operation="wipe_all"
             ) from e 

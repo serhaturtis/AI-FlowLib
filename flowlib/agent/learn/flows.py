@@ -11,7 +11,7 @@ from ...flows.decorators import flow, stage, pipeline
 from ...core.errors import ExecutionError
 from ...core.context import Context
 
-@flow(name="BaseLearningFlow", description="Base flow for knowledge acquisition")
+@flow(name="BaseLearningFlow", description="Base flow for knowledge acquisition", is_infrastructure=True)
 class BaseLearningFlow(Flow):
     """Base flow for knowledge acquisition"""
     
@@ -71,7 +71,7 @@ class BaseLearningFlow(Flow):
         
         return learning_result.data
 
-@flow(name="EntityExtractionFlow", description="Flow for extracting entities from content")
+@flow(name="EntityExtractionFlow", description="Flow for extracting entities from content", is_infrastructure=True)
 class EntityExtractionFlow(BaseLearningFlow):
     """Flow for extracting entities from content"""
     
@@ -100,7 +100,7 @@ class EntityExtractionFlow(BaseLearningFlow):
                     type=entity_info["type"],
                     properties=entity_info["properties"],
                     confidence=entity_info["confidence"],
-                    source=request.content[:100]  # Use first 100 chars as source
+                    source=request.content
                 )
                 entities.append(entity)
         

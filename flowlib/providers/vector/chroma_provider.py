@@ -6,24 +6,35 @@ for ChromaDB, an open-source embedding database.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Collection
+from typing import Any, Dict, List, Optional, Collection, Generic, TypeVar, Union
 import uuid
+import asyncio
 
 from ...core.errors import ProviderError, ErrorContext
 from .base import VectorDBProvider, VectorDBProviderSettings, SimilaritySearchResult
 from ..decorators import provider
 from ..constants import ProviderType
+from ..base import Provider # Import Provider base class
+
+# Removed embedding provider imports - not needed here
+# from ..embedding.base import EmbeddingProvider
+# from ..registry import provider_registry
 
 logger = logging.getLogger(__name__)
 
 
+# Lazy import chromadb
 try:
     import chromadb
     from chromadb.config import Settings as ChromaSettings
     from chromadb.api import Collection
+    # Removed unused EmbeddingFunction, Embeddings types
 except ImportError:
     logger.warning("ChromaDB package not found. Install with 'pip install chromadb'")
+    chromadb = None
+    # EmbeddingFunction = None # Removed
 
+# Removed FlowlibChromaEmbeddingFunction wrapper class
 
 class ChromaDBProviderSettings(VectorDBProviderSettings):
     """Settings for ChromaDB provider.
@@ -35,6 +46,8 @@ class ChromaDBProviderSettings(VectorDBProviderSettings):
         http_host: Host for HTTP client
         http_port: Port for HTTP client
         http_headers: Headers for HTTP client
+        distance_function: Distance function to use (cosine, l2, ip)
+        anonymized_telemetry: Whether to anonymize telemetry
     """
     
     persist_directory: Optional[str] = "./chroma_data"
@@ -46,31 +59,34 @@ class ChromaDBProviderSettings(VectorDBProviderSettings):
     distance_function: str = "cosine"  # cosine, l2, ip
     anonymized_telemetry: bool = False
 
+# Type variable for settings
+SettingsType = TypeVar('SettingsType', bound=ChromaDBProviderSettings)
+
 @provider(provider_type=ProviderType.VECTOR_DB, name="chroma")
-class ChromaDBProvider(VectorDBProvider):
+class ChromaDBProvider(VectorDBProvider[ChromaDBProviderSettings]):
     """ChromaDB implementation of the VectorDBProvider.
     
     This provider implements vector storage, retrieval, and similarity search
     using ChromaDB, an open-source embedding database.
     """
     
-    def __init__(self, name: str = "chroma", settings: Optional[ChromaDBProviderSettings] = None):
+    def __init__(self, name: str = "chroma", settings: Optional[Union[Dict[str, Any], ChromaDBProviderSettings]] = None):
         """Initialize ChromaDB provider.
         
         Args:
             name: Unique provider name
             settings: Optional provider settings
         """
-        # Create settings first to avoid issues with _default_settings() method
-        settings = settings or ChromaDBProviderSettings()
-        
-        # Pass explicit settings to parent class
+        # Initialize VectorDBProvider base - it handles settings creation/assignment
         super().__init__(name=name, settings=settings)
         
-        # Store settings for local use
-        self._settings = settings
+        # Base class now holds self.settings as ChromaDBProviderSettings object
+        # self._settings can be removed or kept as alias if preferred, but using self.settings is standard
+        # self._settings = self.settings # Alias if needed
+        
         self._client = None
         self._collections = {}
+        # Removed _embedding_provider and _embedding_function attributes
         
     async def initialize(self):
         """Initialize the ChromaDB client and default collection."""
@@ -79,46 +95,48 @@ class ChromaDBProvider(VectorDBProvider):
             
         try:
             # Check if ChromaDB is installed
-            if "chromadb" not in globals():
+            if chromadb is None:
                 raise ProviderError(
                     message="ChromaDB package not installed. Install with 'pip install chromadb'",
                     provider_name=self.name
                 )
                 
+            # Removed embedding provider retrieval logic
+
             # Create client based on settings
-            if self._settings.client_type == "persistent":
+            if self.settings.client_type == "persistent":
                 # Ensure persistence directory exists
-                if self._settings.persist_directory:
-                    os.makedirs(self._settings.persist_directory, exist_ok=True)
+                if self.settings.persist_directory:
+                    os.makedirs(self.settings.persist_directory, exist_ok=True)
                 
                 self._client = chromadb.PersistentClient(
-                    path=self._settings.persist_directory,
+                    path=self.settings.persist_directory,
                     settings=ChromaSettings(
-                        anonymized_telemetry=self._settings.anonymized_telemetry
+                        anonymized_telemetry=self.settings.anonymized_telemetry
                     )
                 )
-            elif self._settings.client_type == "http":
-                if not self._settings.http_host or not self._settings.http_port:
+            elif self.settings.client_type == "http":
+                if not self.settings.http_host or not self.settings.http_port:
                     raise ProviderError(
                         message="HTTP host and port must be provided for HTTP client",
                         provider_name=self.name
                     )
                     
                 self._client = chromadb.HttpClient(
-                    host=self._settings.http_host,
-                    port=self._settings.http_port,
-                    headers=self._settings.http_headers or {}
+                    host=self.settings.http_host,
+                    port=self.settings.http_port,
+                    headers=self.settings.http_headers or {}
                 )
             else:
                 # In-memory client as fallback
                 self._client = chromadb.Client(
                     settings=ChromaSettings(
-                        anonymized_telemetry=self._settings.anonymized_telemetry
+                        anonymized_telemetry=self.settings.anonymized_telemetry
                     )
                 )
                 
-            # Create or get default collection
-            await self._get_or_create_collection(self._settings.index_name)
+            # Create or get default collection (without embedding function)
+            await self._get_or_create_collection(self.settings.index_name)
             
             self._initialized = True
             logger.debug(f"{self.name} provider initialized successfully")
@@ -142,6 +160,8 @@ class ChromaDBProvider(VectorDBProvider):
             self._client = None
             self._collections = {}
             self._initialized = False
+            # Removed embedding provider cleanup
+            
             logger.debug(f"{self.name} provider shut down successfully")
             
         except Exception as e:
@@ -155,7 +175,11 @@ class ChromaDBProvider(VectorDBProvider):
     async def _initialize(self) -> None:
         pass
             
-    async def _get_or_create_collection(self, index_name: str) -> Collection:
+    async def _get_or_create_collection(
+        self, 
+        index_name: str
+        # Removed embedding_function parameter
+    ) -> Collection:
         """Get or create a ChromaDB collection.
         
         Args:
@@ -173,7 +197,7 @@ class ChromaDBProvider(VectorDBProvider):
                 provider_name=self.name
             )
             
-        collection_name = self._settings.collection_name or index_name
+        collection_name = self.settings.collection_name or index_name
         
         try:
             # Check if we already have this collection cached
@@ -186,10 +210,11 @@ class ChromaDBProvider(VectorDBProvider):
                 logger.debug(f"Using existing collection: {collection_name}")
             except Exception:
                 # Create collection if it doesn't exist
+                # Pass the embedding function wrapper here
                 collection = self._client.create_collection(
                     name=collection_name,
-                    metadata={"dimension": self._settings.vector_dimension},
-                    embedding_function=None  # We'll provide our own embeddings
+                    metadata={"distance_function": self.settings.distance_function},
+                    embedding_function=None # Explicitly None
                 )
                 logger.debug(f"Created new collection: {collection_name}")
                 
@@ -220,10 +245,10 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
-            dimension = dimension or self._settings.vector_dimension
+            index_name = index_name or self.settings.index_name
+            dimension = dimension or self.settings.vector_dimension
             
-            # Get or create collection
+            # Get or create collection (no embedding function needed)
             await self._get_or_create_collection(index_name)
             return True
             
@@ -253,8 +278,8 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
-            collection_name = self._settings.collection_name or index_name
+            index_name = index_name or self.settings.index_name
+            collection_name = self.settings.collection_name or index_name
             
             # Delete collection
             if not self._client:
@@ -308,12 +333,12 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
+            index_name = index_name or self.settings.index_name
             
             # Generate ID if not provided
             id = id or str(uuid.uuid4())
             
-            # Get collection
+            # Get collection (no embedding function needed)
             collection = await self._get_or_create_collection(index_name)
             
             # Clean metadata (ChromaDB doesn't support nested objects)
@@ -359,9 +384,9 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
+            index_name = index_name or self.settings.index_name
             
-            # Get collection
+            # Get collection (no embedding function needed)
             collection = await self._get_or_create_collection(index_name)
             
             # Validate input lengths
@@ -417,9 +442,9 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
+            index_name = index_name or self.settings.index_name
             
-            # Get collection
+            # Get collection (no embedding function needed)
             collection = await self._get_or_create_collection(index_name)
             
             # Get vector by ID
@@ -471,9 +496,9 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
+            index_name = index_name or self.settings.index_name
             
-            # Get collection
+            # Get collection (no embedding function needed)
             collection = await self._get_or_create_collection(index_name)
             
             # Delete vector by ID
@@ -513,9 +538,9 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
+            index_name = index_name or self.settings.index_name
             
-            # Get collection
+            # Get collection (no embedding function needed)
             collection = await self._get_or_create_collection(index_name)
             
             # Perform similarity search
@@ -523,22 +548,29 @@ class ChromaDBProvider(VectorDBProvider):
                 query_embeddings=[query_vector],
                 n_results=top_k,
                 where=filter,
-                include_embeddings=include_vectors
+                include=['metadatas', 'documents', 'distances'] + (['embeddings'] if include_vectors else [])
             )
             
             # Parse results
             results = []
-            if query_result and query_result["ids"] and len(query_result["ids"][0]) > 0:
-                for i in range(len(query_result["ids"][0])):
+            if query_result and query_result.get("ids") and query_result["ids"][0]:
+                ids = query_result["ids"][0]
+                distances = query_result.get("distances", [[]])[0]
+                metadatas = query_result.get("metadatas", [[]])[0]
+                embeddings = query_result.get("embeddings", [[]])[0]
+                documents = query_result.get("documents", [[]])[0]
+
+                for i in range(len(ids)):
                     result = SimilaritySearchResult(
-                        id=query_result["ids"][0][i],
-                        score=query_result["distances"][0][i] if "distances" in query_result else 0.0,
-                        metadata=query_result["metadatas"][0][i] if "metadatas" in query_result else {}
+                        id=ids[i],
+                        score=distances[i] if i < len(distances) else 0.0,
+                        metadata=metadatas[i] if i < len(metadatas) else {},
+                        text=documents[i] if i < len(documents) else None
                     )
                     
-                    # Add vector if requested
-                    if include_vectors and "embeddings" in query_result:
-                        result.vector = query_result["embeddings"][0][i]
+                    # Add vector if requested and available
+                    if include_vectors and embeddings and i < len(embeddings):
+                        result.vector = embeddings[i]
                         
                     results.append(result)
                     
@@ -575,7 +607,7 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
+            index_name = index_name or self.settings.index_name
             
             # Get the vector by ID first
             vector_data = await self.get(id, include_vector=True, index_name=index_name)
@@ -623,9 +655,9 @@ class ChromaDBProvider(VectorDBProvider):
         """
         try:
             # Use settings as defaults
-            index_name = index_name or self._settings.index_name
+            index_name = index_name or self.settings.index_name
             
-            # Get collection
+            # Get collection (no embedding function needed)
             collection = await self._get_or_create_collection(index_name)
             
             # Count with filter if provided

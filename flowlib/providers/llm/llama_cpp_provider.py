@@ -405,32 +405,47 @@ class LlamaCppProvider(LLMProvider[LlamaCppSettings]):
         
         logger.info(f"Generated text: {generated_text[:200]}...")
         
-        # Parse JSON directly - no fallback or extraction attempts
+        # Attempt to parse the JSON
+        # === ADDED SANITIZATION ===
+        # Try to remove common problematic control chars before parsing
+        # This specifically targets replacing literal newline/tab characters within the JSON string content,
+        # which often cause issues, while preserving escaped ones (\n, \t).
+        # It also removes other low-ASCII control characters except tab.
+        import re
+        sanitized_text = re.sub(r'(?<!\\)[\x00-\x08\x0B\x0C\x0E-\x1F]', '', generated_text)
+        # Replace unescaped newlines and tabs within strings specifically
+        # This regex is complex: it finds "key": "...content..." and replaces 
+        # unescaped newlines/tabs within the content part.
+        def replace_control_chars(match):
+            key = match.group(1)
+            content = match.group(2)
+            # Replace unescaped newlines/tabs within the content
+            cleaned_content = content.replace('\n', '\\n').replace('\t', '\\t')
+            return f'"{key}": "{cleaned_content}"'
+            
+        # Apply the regex substitution - might need refinement based on JSON structure variance
+        # This is a simplified attempt, complex nested structures might need more robust parsing
         try:
-            parsed_data = json.loads(generated_text)
-        except json.JSONDecodeError as e:
-            raise ProviderError(
-                message=f"Failed to parse JSON from response: {str(e)}",
-                provider_name=self.name,
-                context=ErrorContext.create(
-                    response_text=generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
-                )
-            ) from e
+            sanitized_text = re.sub(r'"(\w+)":\s*"((?:[^"\\]|\\.)*)"' , replace_control_chars, sanitized_text)
+        except Exception as regex_err:
+             logger.warning(f"Regex sanitization failed: {regex_err}. Proceeding with original text.")
+             # Fallback or just use the simpler char removal if regex fails
+             sanitized_text = re.sub(r'(?<!\\)[\x00-\x08\x0B\x0C\x0E-\x1F]', '', generated_text)
+        # ==========================
         
-        # Sanitize strings in parsed data
-        sanitized_data = self._sanitize_strings(parsed_data)
+        parsed_data = json.loads(sanitized_text)
         
-        # Validate against target model
+        # Validate with Pydantic model if provided
         try:
             # Create an instance of the output_type class using the parsed data
-            validated_response = output_type.model_validate(sanitized_data)
+            validated_response = output_type.model_validate(parsed_data)
             return validated_response
         except Exception as e:
             raise ProviderError(
                 message=f"Failed to validate response against model {output_type.__name__}: {str(e)}",
                 provider_name=self.name,
                 context=ErrorContext.create(
-                    response_text=json.dumps(sanitized_data)[:200] + "..." if len(json.dumps(sanitized_data)) > 200 else json.dumps(sanitized_data)
+                    response_text=json.dumps(parsed_data)[:200] + "..." if len(json.dumps(parsed_data)) > 200 else json.dumps(parsed_data)
                 )
             ) from e
             

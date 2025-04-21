@@ -9,9 +9,10 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
+from ...providers.constants import ProviderType
+
 from .base import BaseComponent
 from .errors import ConfigurationError, ExecutionError, StatePersistenceError, NotInitializedError, ComponentError
-from ..memory.agent_memory import AgentMemory
 from ..engine.base import AgentEngine
 from ..planning.base import AgentPlanner
 from ..reflection.base import AgentReflection
@@ -37,6 +38,21 @@ from flowlib.agent.learn.models import LearningRequest, LearningResponse, Learni
 
 from ..persistence.factory import create_state_persister
 
+# Import the new memory components
+from ..memory.comprehensive import ComprehensiveMemory
+from ..memory.working import WorkingMemory
+from ..memory.vector import VectorMemory
+from ..memory.knowledge import KnowledgeBaseMemory
+
+# Import provider registry and provider types
+from ...providers.registry import provider_registry
+from ...providers.constants import ProviderType
+
+# Import create_and_initialize_provider
+from ...providers.factory import create_and_initialize_provider
+
+# Import Neo4jProvider
+from ...providers.graph.neo4j_provider import Neo4jProvider
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -67,11 +83,18 @@ class AgentCore(BaseComponent):
             name: Name for the agent
             state_persister: State persister for agent
         """
-        # Set up configuration
+        # Set up configuration first
         self.config = self._prepare_config(config)
-        
+
+        # Store persona (already validated in _prepare_config or AgentConfig model)
+        self.persona = self.config.persona
+
         # Set name from config or override
         super().__init__(name or self.config.name)
+        
+        # Store initial task description, state will be created/loaded in initialize
+        self._initial_task_description = task_description
+        self.state = None # Initialize state as None
         
         # Set up components
         self._planner = None
@@ -82,9 +105,6 @@ class AgentCore(BaseComponent):
         
         # Set up state persister
         self._state_persister = state_persister
-        
-        # Set up initial state with task description if provided
-        self.state = AgentState(task_description=task_description)
         
         # Store flows
         self.flows = {}
@@ -102,17 +122,35 @@ class AgentCore(BaseComponent):
         Returns:
             Prepared AgentConfig instance
         """
+        prepared_config: AgentConfig
+
         # If config is provided as dict, convert to AgentConfig
         if isinstance(config, dict):
-            return AgentConfig(**config)
+            prepared_config = AgentConfig(**config)
         # If config is already an AgentConfig, use it
         elif isinstance(config, AgentConfig):
-            return config
+            prepared_config = config
         # If no config is provided, use defaults
         else:
-            return AgentConfig(
-                name=getattr(self, "_name", "agent")
+            # Need a default name and persona if no config is given *at all*
+            # This case might need more robust handling depending on required fields
+            default_name = getattr(self, "_name", "default_agent")
+            default_persona = "Default helpful assistant"
+            logger.warning(f"No config provided, creating default AgentConfig for {default_name}")
+            prepared_config = AgentConfig(
+                name=default_name,
+                persona=default_persona 
             )
+
+        # Ensure critical fields like name and persona are present after potential defaults
+        if not hasattr(prepared_config, 'name') or not prepared_config.name:
+             prepared_config.name = "default_agent"
+        if not hasattr(prepared_config, 'persona') or not prepared_config.persona:
+             # This should ideally be caught by Pydantic if made mandatory non-optional
+             # but adding a fallback just in case.
+             prepared_config.persona = "Default helpful assistant"
+
+        return prepared_config
     
     @property
     def llm_provider(self) -> Optional[Any]:
@@ -133,7 +171,7 @@ class AgentCore(BaseComponent):
         self._llm_provider = provider
     
     async def _initialize_impl(self) -> None:
-        """Initialize AgentCore and its components."""
+        """Initialize AgentCore, including state loading/creation and components."""
         try:
             # Set up state persistence if configured and not already provided
             if self.config.state_config and not self._state_persister:
@@ -142,17 +180,102 @@ class AgentCore(BaseComponent):
                     **self.config.state_config.model_dump(exclude={"persistence_type"})
                 )
             
+            state_loaded_or_created = False
             # Initialize the state persister if provided
             if self._state_persister:
                 await self._state_persister.initialize()
                 
-                # Load state if configured
-                if self.config.state_config and self.config.state_config.auto_load and self.state.task_id:
-                    await self.load_state()
+                # Determine if we should attempt to load state
+                should_auto_load = self.config.state_config and self.config.state_config.auto_load
+                task_id_to_load = self.config.task_id # Get task_id from config
+                
+                if should_auto_load and task_id_to_load:
+                    logger.info(f"Attempting to load state for task_id: {task_id_to_load}")
+                    try:
+                        await self.load_state(task_id=task_id_to_load) # Pass specific task_id
+                        state_loaded_or_created = True # Flag that state is now set
+                    except StatePersistenceError as e:
+                        # Log the error but continue to create a new state if loading failed
+                        logger.warning(f"Failed to load state for task {task_id_to_load}, creating new state: {e}")
+                else:
+                    logger.info("Auto-load disabled or no task_id provided, will create new state if needed.")
             
-            # Create the required components
-            self._memory = self._memory or AgentMemory(config=self.config.memory_config)
-            self._memory.set_parent(self)
+            # If state wasn't loaded, create a new one now
+            if not state_loaded_or_created:
+                logger.info(f"Creating new agent state with description: '{self._initial_task_description}'")
+                self.state = AgentState(task_description=self._initial_task_description)
+                # The new state will have a new task_id generated by AgentState
+                state_loaded_or_created = True
+
+            # Ensure state is actually set before proceeding (should always be true here)
+            if not self.state:
+                 raise ConfigurationError("Agent state was not created or loaded during initialization.")
+
+            # --- Instantiate Memory Components --- 
+            if not self._memory:
+                mem_config = self.config.memory_config # ComprehensiveMemoryConfig
+                
+                # --- Create Providers (fetch or create & initialize) ---
+                # Embedding Provider (created via factory by registry.get)
+                embedding_provider = await provider_registry.get(
+                    ProviderType.EMBEDDING,
+                    mem_config.vector_memory.embedding_provider_name
+                )
+
+                # Vector Provider (created via factory by registry.get)
+                vector_provider = await provider_registry.get(
+                    ProviderType.VECTOR_DB,
+                    mem_config.vector_memory.vector_provider_name
+                )
+                # Note: Vector provider init might depend on embedding provider,
+                # registry.get should handle initialization order if factories are used.
+                # If providers are registered directly, ensure init order is correct.
+
+                # Graph Provider (create directly using settings)
+                # Import factory and constants
+                from ...providers.factory import create_provider 
+                # Import specific provider class needed (adjust if supporting others)
+                from ...providers.graph.neo4j_provider import Neo4jProvider 
+
+                # Ensure we have settings
+                graph_provider_name = mem_config.knowledge_memory.graph_provider_name
+                graph_settings = mem_config.knowledge_memory.provider_settings
+                if not graph_settings:
+                    raise ConfigurationError("provider_settings missing for knowledge memory")
+
+                # Create and initialize the graph provider instance
+                graph_provider = await create_and_initialize_provider(
+                    provider_type=ProviderType.GRAPH_DB, 
+                    name=graph_provider_name, 
+                    implementation=graph_provider_name, # Assume name matches implementation key
+                    register=True, # Register instance
+                    **graph_settings
+                )
+                # -------------------------------------------------------
+                
+                # Instantiate specialized memories, passing provider instances
+                working_mem = WorkingMemory(
+                    default_ttl_seconds=mem_config.working_memory.default_ttl_seconds
+                )
+                vector_mem = VectorMemory(
+                    # VectorMemory now gets provider from registry
+                    provider_name=vector_provider.name, 
+                    embedding_provider_name=embedding_provider.name
+                )
+                knowledge_mem = KnowledgeBaseMemory(
+                    graph_provider=graph_provider # Pass instance
+                )
+                
+                # Instantiate comprehensive memory
+                self._memory = ComprehensiveMemory(
+                    vector_memory=vector_mem,
+                    knowledge_memory=knowledge_mem,
+                    working_memory=working_mem,
+                    fusion_provider_name=mem_config.fusion_provider_name,
+                    fusion_model_name=mem_config.fusion_model_name
+                )
+                self._memory.set_parent(self) # Register for lifecycle management
+            # -------------------------------------
             
             self._planner = self._planner or AgentPlanner(config=self.config.planner_config)
             self._planner.set_parent(self)
@@ -259,11 +382,11 @@ class AgentCore(BaseComponent):
                 cause=e
             )
     
-    async def load_state(self, task_id: Optional[str] = None) -> None:
+    async def load_state(self, task_id: str) -> None:
         """Load agent state.
         
         Args:
-            task_id: Optional task ID to load. If not provided, uses current task ID.
+            task_id: The specific task ID to load state for.
             
         Raises:
             StatePersistenceError: If state persister is not configured, state is not found, or persistence fails
@@ -276,25 +399,24 @@ class AgentCore(BaseComponent):
             
         try:
             # Use provided task ID or current one
-            target_task_id = task_id or self.state.task_id
-            if not target_task_id:
+            if not task_id:
                 raise StatePersistenceError(
                     message="No task ID provided for state loading",
                     operation="load"
                 )
             
             # Load state
-            loaded_state = await self._state_persister.load_state(task_id=target_task_id)
+            loaded_state = await self._state_persister.load_state(task_id=task_id)
             if not loaded_state:
                 raise StatePersistenceError(
-                    message=f"No state found for task ID: {target_task_id}",
+                    message=f"No state found for task ID: {task_id}",
                     operation="load",
-                    task_id=target_task_id
+                    task_id=task_id
                 )
             
             # Update current state
             self.state = loaded_state
-            logger.info(f"Loaded state for task: {target_task_id}")
+            logger.info(f"Successfully loaded state for task: {task_id}")
             
         except Exception as e:
             if isinstance(e, StatePersistenceError):
@@ -755,85 +877,6 @@ class AgentCore(BaseComponent):
             await self.save_state()
         
         return continue_execution
-    
-    async def execute_task(self, max_cycles: Optional[int] = None, **kwargs) -> AgentState:
-        """Execute a complete task.
-        
-        Args:
-            max_cycles: Maximum number of cycles to execute (default: use engine config)
-            **kwargs: Additional execution arguments
-            
-        Returns:
-            Final agent state
-            
-        Raises:
-            ExecutionError: If task execution fails
-            NotInitializedError: If the agent is not initialized
-        """
-        if not self.initialized:
-            raise NotInitializedError(
-                component_name=self.name,
-                operation="execute_task",
-                message=f"Agent '{self.name}' must be initialized before executing tasks"
-            )
-        
-        if not self._engine:
-            raise ExecutionError(
-                message="No engine available for task execution",
-                agent=self.name
-            )
-        
-        # Configure the max cycles
-        cycles_limit = max_cycles or self._engine._config.max_iterations
-        
-        try:
-            # Execute the task
-            cycle_count = 0
-            current_state = self.state
-            
-            while cycle_count < cycles_limit:
-                cycle_count += 1
-                
-                # Execute a single cycle
-                continue_execution = await self._engine.execute_cycle(
-                    state=current_state,
-                    memory_context=f"task_{current_state.task_id}",
-                    **kwargs
-                )
-                
-                # Check if we should continue
-                if not continue_execution:
-                    logger.info(f"Task execution complete after {cycle_count} cycles")
-                    break
-                    
-                # Update our reference to the current state
-                current_state = self.state
-                
-                # Save checkpoint after each cycle if configured
-                if self._state_persister and self.config.state_config and self.config.state_config.auto_save:
-                    await self.save_state()
-            
-            # Save final state
-            if self._state_persister and self.config.state_config and self.config.state_config.auto_save:
-                await self.save_state()
-                
-            return self.state
-            
-        except Exception as e:
-            # Log and wrap the error with execution context
-            error_msg = f"Task execution failed: {str(e)}"
-            logger.error(error_msg)
-            
-            # Update state with error
-            self.state.add_error(str(e))
-            
-            # Wrap and re-raise with execution context
-            raise ExecutionError(
-                message=error_msg,
-                agent=self.name,
-                state=self.state,
-                cause=e
-            )
     
     async def learn(self, request: LearningRequest) -> LearningResponse:
         """Execute a learning flow based on the requested strategy.

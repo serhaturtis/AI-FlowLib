@@ -16,6 +16,7 @@ from ..core.errors import ValidationError
 from ..core.errors import ErrorManager, default_manager, ErrorContext, BaseError, ExecutionError
 from .results import FlowResult
 from .constants import FlowStatus
+from pydantic import ValidationError
 
 #T = TypeVar('T', bound='BaseModel')
     
@@ -179,21 +180,22 @@ class Flow(ABC, Generic[T]):
             self.pipeline_method = None
             for name in dir(name_or_instance):
                 method = getattr(name_or_instance, name)
-                if hasattr(method, "_pipeline") and method._pipeline:
+                if hasattr(method, "__pipeline__") and method.__pipeline__:
                     self.pipeline_method = method
                     
-                    # Use pipeline input/output models if available
-                    if hasattr(method, "input_model") and method.input_model:
-                        input_schema = method.input_model
+                    # Use correct attributes set by @pipeline decorator to potentially override schemas
+                    # Use double underscores as set by the decorator and used by FlowMetadata
+                    if hasattr(method, "__input_model__") and method.__input_model__:
+                        input_schema = method.__input_model__
                         # Validate the pipeline's input model
                         if not (isinstance(input_schema, type) and issubclass(input_schema, BaseModel)):
-                            raise ValueError(f"Pipeline input_model must be a Pydantic BaseModel subclass, got {input_schema}")
+                            raise ValueError(f"Pipeline __input_model__ must be a Pydantic BaseModel subclass, got {input_schema}")
                             
-                    if hasattr(method, "output_model") and method.output_model:
-                        output_schema = method.output_model
+                    if hasattr(method, "__output_model__") and method.__output_model__:
+                        output_schema = method.__output_model__
                         # Validate the pipeline's output model
                         if not (isinstance(output_schema, type) and issubclass(output_schema, BaseModel)):
-                            raise ValueError(f"Pipeline output_model must be a Pydantic BaseModel subclass, got {output_schema}")
+                            raise ValueError(f"Pipeline __output_model__ must be a Pydantic BaseModel subclass, got {output_schema}")
                     break
 
         self.input_schema = input_schema
@@ -288,27 +290,22 @@ class Flow(ABC, Generic[T]):
         error_context = ErrorContext.create(
             flow_name=self.name
         )
-
+        from pydantic import ValidationError # Ensure ValidationError is in scope for the except block
         try:
+            # Initialize prepared input data variable
+            pipeline_input_arg = None # Renamed from prepared_input_data
+
             # Create error boundary
             async with self.error_manager.async_error_boundary(context.data):
-                # Validate input if schema exists
-                if self.input_schema:
-                    input_data = self._prepare_input(context)
-                    error_context = error_context.add(input_data=input_data)
-                    self._validate_input(input_data)
-
-
-                # This is a decorated @flow class, call the pipeline method directly
-                pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
                 
+                # === MODIFIED SECTION: Get pipeline method and its expected input model ===
+                pipeline_method_name = getattr(self.__class__, '__pipeline_method__', None)
                 if not pipeline_method_name:
                     raise ExecutionError(
                         "No pipeline method found on flow. Each flow must have exactly one @pipeline method.",
                         error_context
                     )
                 
-                # Get the pipeline method
                 pipeline_method = getattr(self, pipeline_method_name)
                 if not pipeline_method:
                     raise ExecutionError(
@@ -316,12 +313,47 @@ class Flow(ABC, Generic[T]):
                         error_context
                     )
                 
+                expected_input_model = getattr(pipeline_method, '__input_model__', None)
+                # ==========================================================================
+
+                # Prepare and validate input based on the pipeline's expected model
+                if expected_input_model:
+                    if not context.data:
+                         raise ValueError("Context data is missing for pipeline requiring input.")
+                         
+                    # Ensure context.data matches or can be parsed into the expected model
+                    if isinstance(context.data, expected_input_model):
+                        pipeline_input_arg = context.data
+                    elif isinstance(context.data, dict):
+                        try:
+                            pipeline_input_arg = expected_input_model(**context.data)
+                        except Exception as validation_err:
+                            raise ValidationError(f"Input validation failed for {expected_input_model.__name__}: {validation_err}") from validation_err
+                    else:
+                         raise TypeError(f"Context data type {type(context.data)} cannot be used for pipeline expecting {expected_input_model.__name__}")
+                    
+                    # Add validated input to error context
+                    error_context = error_context.add(input_data=pipeline_input_arg)
+                    
+                    # Optional: Re-validate using the schema if needed (might be redundant)
+                    # self._validate_input(pipeline_input_arg) 
+                else:
+                     # Pipeline expects no input model
+                     pipeline_input_arg = None 
+
+                # === ORIGINAL VALIDATION (can be removed or kept if Flow has separate schema) ===
+                # if self.input_schema:
+                #     prepared_input_data = self._prepare_input(context)
+                #     error_context = error_context.add(input_data=prepared_input_data)
+                #     self._validate_input(prepared_input_data)
+                # ================================================================================
+
                 # Add debug output
                 print("="*50)
                 print(f"DEBUG: Pipeline method name: {pipeline_method_name}")
                 print(f"DEBUG: Pipeline method: {pipeline_method}")
                 print(f"DEBUG: Pipeline method type: {type(pipeline_method)}")
-                print(f"DEBUG: Pipeline method dir: {dir(pipeline_method)}")
+                # print(f"DEBUG: Pipeline method dir: {dir(pipeline_method)}") # Less useful
                 
                 # Execute the pipeline function
                 try:
@@ -337,70 +369,39 @@ class Flow(ABC, Generic[T]):
                         pipeline_args['ctx'] = context
                         print(f"DEBUG: Added ctx to pipeline_args")
                     
-                    # Handle differently based on input parameters for the pipeline
+                    # Dump parameters for debugging
                     print(f"DEBUG: Pipeline parameters length: {len(pipeline_sig.parameters)}")
-                    # Dump each parameter
                     for param_name, param in pipeline_sig.parameters.items():
                         print(f"DEBUG: Parameter '{param_name}': {param}")
                     
-                    # Handle differently based on input parameters for the pipeline
-                    # For a bound method, the signature doesn't include 'self',
-                    # but we need to handle it as if it does when calling the method
-                    # If there's at least one parameter, we should pass input_data
+                    # Handle passing the main input argument
                     if pipeline_sig.parameters:
-                        # Get input data
-                        input_data = context.data
-                        
-                        # Debug logging
-                        print(f"DEBUG: Pipeline method: {pipeline_method.__name__}")
-                        print(f"DEBUG: Pipeline parameters: {pipeline_sig.parameters}")
-                        print(f"DEBUG: Context data type: {type(input_data)}")
-                        
-                        # Validate input data against input_schema if set
-                        if getattr(pipeline_method, '__input_model__', None):
-                            input_model = pipeline_method.__input_model__
-                            print(f"DEBUG: Expected input model: {input_model}")
-                            # Input data must be an instance of the expected model
-                            if not isinstance(input_data, input_model):
-                                raise ValidationError(
-                                    f"Pipeline input must be an instance of {input_model.__name__}, got {type(input_data).__name__}"
-                                )
-                        
-                        # Get the parameter names
                         param_names = list(pipeline_sig.parameters.keys())
-                        print(f"DEBUG: Parameter names: {param_names}")
-                        print(f"DEBUG: Pipeline args: {pipeline_args}")
+                        first_param_name = param_names[0]
+                        print(f"DEBUG: First parameter name: {first_param_name}")
                         
-                        # For methods, the first parameter is for input data
-                        first_param = param_names[0] if param_names else None 
-                        if first_param:
-                            print(f"DEBUG: First parameter: {first_param}")
-                            
-                            # If the first parameter is 'context' or 'ctx', we shouldn't pass input_data as first arg
-                            if first_param in ['context', 'ctx']:
-                                print("DEBUG: Calling pipeline_method with kwargs only (first param is context/ctx)")
-                                pipeline_result = await pipeline_method(**pipeline_args)
-                            else:
-                                # Pass input_data as the first positional argument
-                                print("DEBUG: Calling pipeline_method with input_data as first arg")
-                                pipeline_result = await pipeline_method(input_data, **pipeline_args)
+                        # If the first param isn't context/ctx, it expects the main input
+                        if first_param_name not in ['context', 'ctx']:
+                            print(f"DEBUG: Passing main input argument: {type(pipeline_input_arg)}")
+                            pipeline_result = await pipeline_method(pipeline_input_arg, **pipeline_args)
                         else:
-                            # No parameters, don't pass input_data
-                            print("DEBUG: Calling pipeline_method with no args")
+                            # First param is context/ctx, only pass kwargs
+                            print("DEBUG: Calling pipeline_method with kwargs only (first param is context/ctx)")
                             pipeline_result = await pipeline_method(**pipeline_args)
                     else:
-                        # No parameters at all
-                        print("DEBUG: Calling pipeline_method with no args (no parameters)")
+                        # No parameters, call with kwargs only (which might be empty)
+                        print("DEBUG: Calling pipeline_method with kwargs only (no parameters)")
                         pipeline_result = await pipeline_method(**pipeline_args)
                     
                     # Validate result type against output_schema if defined
                     output_model = getattr(pipeline_method, '__output_model__', None)
                     if output_model is not None:
                         if not isinstance(pipeline_result, output_model):
+                            # Import validation error if needed
+                            from pydantic import ValidationError
                             raise ValidationError(
                                 f"Pipeline '{pipeline_method.__name__}' must return an instance of {output_model.__name__}, got {type(pipeline_result).__name__}"
                             )
-                    
                     
                     result = FlowResult(
                         data=pipeline_result,  # Store the model directly
@@ -419,10 +420,6 @@ class Flow(ABC, Generic[T]):
                         context=error_context,
                         cause=e
                     )
-
-                # Validate output if schema exists
-                if self.output_schema and result.data:
-                    self._validate_output(result.data)
 
                 # Record successful execution
                 execution_time = (datetime.now() - execution_start).total_seconds()
@@ -549,46 +546,69 @@ class Flow(ABC, Generic[T]):
     def _prepare_input(self, context: Context) -> Any:
         """Prepare input data from context.
         
+        If input_schema is defined, retrieves the validated Pydantic model instance
+        from the context using `context.as_model()`. Otherwise, returns raw context data.
+
         Args:
             context: Execution context
             
         Returns:
-            Prepared input data which must be a Pydantic model
+            Prepared input data (Pydantic model instance if schema defined, else dict)
             
         Raises:
             ExecutionError: If preparation fails
-            ValidationError: If input data is not a Pydantic model when input_schema is defined
+            ValidationError: If `context.as_model()` fails or returns wrong type
         """
         try:
-            # The new Context has attribute-based access
-            data = context.data
-            
-            # Handle the nested context structure used in CompositeFlow
-            if isinstance(data, dict) and 'input' in data:
-                data = data['input']
-            
-            # Input data must be a Pydantic model if input_schema is defined
-            if self.input_schema and not isinstance(data, self.input_schema):
-                raise ValidationError(
-                    f"Input must be an instance of {self.input_schema.__name__}",
-                    validation_errors=[{
-                        "location": "input",
-                        "message": f"Expected {self.input_schema.__name__}, got {type(data).__name__}",
-                        "type": "type_error"
-                    }],
-                    context=ErrorContext.create(
-                        flow_name=self.name,
-                        expected_type=self.input_schema.__name__,
-                        actual_type=type(data).__name__
-                    )
-                )
+            if self.input_schema:
+                # Context stores model as dict; reconstruct instance using as_model()
+                print(f"DEBUG: _prepare_input calling context.as_model() for {self.input_schema.__name__}")
+                model_instance = context.as_model()
                 
-            # Return the data directly
-            return data
-        except ValidationError as e:
-            # Re-raise validation errors with additional context
+                if model_instance is None:
+                     # This happens if context had no model_type initially
+                     raise ValidationError(
+                         f"Context does not contain a model of type {self.input_schema.__name__} needed by flow '{self.name}'",
+                         context=ErrorContext.create(flow_name=self.name, expected_type=self.input_schema.__name__)
+                     )
+
+                # Validate the reconstructed model instance type
+                if not isinstance(model_instance, self.input_schema):
+                    raise ValidationError(
+                        f"Expected input model of type {self.input_schema.__name__}, but context provided {type(model_instance).__name__}",
+                        validation_errors=[{
+                            "location": "input",
+                            "message": f"Expected {self.input_schema.__name__}, got {type(model_instance).__name__}",
+                            "type": "type_error"
+                        }],
+                        context=ErrorContext.create(
+                            flow_name=self.name,
+                            expected_type=self.input_schema.__name__,
+                            actual_type=type(model_instance).__name__
+                        )
+                    )
+                
+                print(f"DEBUG: _prepare_input successfully got model instance: {type(model_instance)}")
+                # Add explicit logging of the instance being returned
+                print(f"DEBUG: _prepare_input returning instance: {repr(model_instance)}") 
+                return model_instance
+            else:
+                # No input schema defined for this flow, return raw data dict
+                print("DEBUG: _prepare_input returning context.data (no input schema)")
+                return context.data
+
+        except ValidationError:
+            # Re-raise validation errors
             raise
+        except ValueError as ve:
+            # Catch specific errors from as_model() if internal data is inconsistent
+             raise ValidationError(
+                f"Failed to reconstruct input model {self.input_schema.__name__} from context: {str(ve)}",
+                context=ErrorContext.create(flow_name=self.name),
+                cause=ve
+             )
         except Exception as e:
+            # Wrap other exceptions
             raise ExecutionError(
                 message="Failed to prepare input",
                 context=ErrorContext.create(
@@ -596,52 +616,6 @@ class Flow(ABC, Generic[T]):
                     input_data=getattr(context, 'data', {})
                 ),
                 cause=e
-            )
-
-    async def _execute(self, context: Context) -> FlowResult:
-        """Execute flow-specific logic.
-        Must be implemented by flow subclasses unless a flow instance
-        with a pipeline method is provided.
-        
-        Args:
-            context: Execution context
-            
-        Returns:
-            FlowResult containing execution outcome
-        """
-        if self.flow_instance and self.pipeline_method:
-            # Execute pipeline method on flow instance
-            result = await self.pipeline_method(context.data)
-            
-            # Convert to FlowResult if needed
-            if not isinstance(result, FlowResult):
-                if isinstance(result, BaseModel):
-                    # For Pydantic models
-                    return FlowResult(
-                        data=result.model_dump(),
-                        original_type=type(result),
-                        flow_name=self.name,
-                        status=FlowStatus.SUCCESS
-                    )
-                elif isinstance(result, dict):
-                    # For dictionaries
-                    return FlowResult(
-                        data=result,
-                        flow_name=self.name,
-                        status=FlowStatus.SUCCESS
-                    )
-                else:
-                    # For primitive types or other objects
-                    return FlowResult(
-                        data={"result": result},
-                        flow_name=self.name,
-                        status=FlowStatus.SUCCESS
-                    )
-            return result
-        else:
-            # Abstract method must be implemented by subclasses
-            raise NotImplementedError(
-                "Either implement _execute method in a Flow subclass or provide a flow instance with a pipeline method"
             )
 
     def add_error_handler(

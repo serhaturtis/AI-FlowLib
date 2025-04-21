@@ -18,17 +18,14 @@ class DefaultReflectionPrompt:
     Your task is to analyze the execution results and provide insights to improve future planning.
     
     Task description: {{task_description}}
-    Flow name: {{flow_name}}
+    Execution Type: {{flow_name}} # Indicates 'PlanExecution', 'PlanExecution_Failed', etc.
     
     Planning rationale: {{planning_rationale}}
 
-    Flow status:
+    Execution status:
     {{flow_status}}
     
-    Flow inputs:
-    {{flow_inputs}}
-    
-    Flow execution result:
+    Execution Result Summary (Could be the final step result or an error summary):
     {{flow_result}}
     
     Execution history:
@@ -40,12 +37,12 @@ class DefaultReflectionPrompt:
     Current progress:
     {{current_progress}}
     
-    Analyze the execution results and reflect on the following:
-    1. Was the execution successful? Why or why not?
-    2. Was the selected flow appropriate for the task?
-    3. Were the inputs well-formed and appropriate?
-    4. Is the task complete or are additional steps needed?
-    5. What could be improved in future planning cycles?
+    Analyze the overall execution outcome based on the status, result summary, and history:
+    1. Assess Success: Was the overall plan/execution successful in achieving the task or making progress? Explain why, considering the status and result.
+    2. Analyze Plan/Steps: Review the execution history. Were the planned steps logical? Did they execute as expected?
+    3. Identify Issues: If the status is ERROR, what caused the failure (planning error, step error)? Was it recoverable?
+    4. Task Completion: Based on the execution, is the overall task now complete? If so, why? If not, what needs to happen next?
+    5. Future Improvements: What lessons can be learned? How could planning or execution be improved for similar tasks?
     """
     config = {
         "max_tokens": 1024,

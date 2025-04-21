@@ -14,7 +14,8 @@ from ...core.context import Context
 
 @flow(
     name="ConceptFormationFlow",
-    description="Analyzes content to identify patterns and form new concepts, with confidence scoring and property extraction."
+    description="Analyzes content to identify patterns and form new concepts, with confidence scoring and property extraction.",
+    is_infrastructure=True
 )
 class ConceptFormationFlow(BaseLearningFlow):
     """Flow for forming new concepts from content"""
@@ -69,7 +70,7 @@ class ConceptFormationFlow(BaseLearningFlow):
                         "examples": concept_info["examples"]
                     },
                     confidence=concept_info["confidence"],
-                    source=request.content[:100]
+                    source=request.content
                 )
                 concepts.append(concept)
                 
@@ -82,7 +83,7 @@ class ConceptFormationFlow(BaseLearningFlow):
                         target_entity_id=parent_id,
                         properties={"hierarchy_level": "direct"},
                         confidence=concept_info["confidence"],
-                        source=request.content[:100]
+                        source=request.content
                     )
                     concept_relationships.append(relationship)
         

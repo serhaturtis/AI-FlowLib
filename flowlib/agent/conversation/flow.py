@@ -7,7 +7,7 @@ specialized flows for every type of interaction.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, Field
 
 from ...flows.base import Flow
@@ -25,12 +25,10 @@ logger = logging.getLogger(__name__)
 class ConversationInput(BaseModel):
     """Input model for conversation flow."""
     message: str = Field(..., description="The user message to respond to")
-    language: Optional[str] = Field(None, description="Language to use for the response")
-    persona: Optional[str] = Field(None, description="Persona to use for the response")
-    context: Optional[Dict[str, Any]] = Field(
-        default_factory=dict,
-        description="Additional context for the conversation"
-    )
+    language: Optional[str] = Field("English", description="Language to use for the response")
+    conversation_history: Optional[List[Dict[str, str]]] = Field(default_factory=list, description="List of conversation history entries (e.g., {'role': 'user'/'assistant', 'content': 'message'}) ")
+    memory_context_summary: Optional[str] = Field(None, description="Summary of relevant memory context")
+    task_result_summary: Optional[str] = Field(None, description="Summary of the result from a previously executed task")
 
 
 class ConversationOutput(BaseModel):
@@ -61,23 +59,28 @@ class ConversationExecuteInput(BaseModel):
 class ConversationPrompt:
     """Prompt template for conversation responses."""
     
-    template = """You are a helpful AI assistant. {{persona}}Respond to the following message from the user in {{language}}:
+    template = """You are an AI assistant. Your persona is: {{persona}}
 
-User message: {{message}}
+## Instructions
+- Use the provided Conversation History, Memory Context, and Task Result (if any) to generate a relevant, helpful, and on-topic response to the latest User Message.
+- If a Task Result is provided, present the key information from it clearly to the user (e.g., summarize the findings, state the outcome of the command).
+- Maintain a consistent and friendly conversational tone.
+- Respond in {{language}}.
 
-{{context_text}}
+## Conversation History
+{{conversation_history}}
 
-RESPONSE GUIDELINES:
-1. Provide a helpful, concise, and friendly response appropriate to the message.
-2. Your response should be in plain conversational text without any formatting, markdown, or code blocks.
-3. DO NOT include any metadata, JSON, function definitions, or system messages in your response.
-4. DO NOT prefix your response with labels like "Response:" or "Assistant:".
-5. DO NOT use technical formatting or delimiters like ```, <|im_start|>, or <|im_end|>.
-6. DO write in a natural, conversational style as if you're having a direct conversation.
-7. Keep your response focused on answering the user's question or responding to their message.
+## Memory Context
+{{memory_context_summary}}
 
-Respond directly:
-"""
+## Task Result
+{{task_result_summary}}
+
+## Current User Message
+{{message}}
+
+YOUR RESPONSE:"""
+    
     config = {
         "max_tokens": 500,
         "temperature": 0.7
@@ -86,7 +89,8 @@ Respond directly:
 
 @agent_flow(
     name="ConversationFlow",
-    description="Generate natural language responses to user messages"
+    description="Generate natural language responses to user messages",
+    is_infrastructure=True
 )
 class ConversationFlow(Flow):
     """Flow that handles natural language conversations and generates responses."""
@@ -104,150 +108,102 @@ class ConversationFlow(Flow):
         """Pipeline for conversation processing and response generation.
         
         Args:
-            input_data: Conversation input data
+            input_data: Conversation input data including message, history, and context summaries.
             
         Returns:
             Output containing the response
         """
         try:
-            # Extract the message and any config
+            # Extract the message and structured context
             message = input_data.message
             language = input_data.language
-            persona = input_data.persona
-            context = input_data.context
+            conversation_history = input_data.conversation_history
+            memory_context_summary = input_data.memory_context_summary or "No specific memory context available."
+            task_result_summary = input_data.task_result_summary or "No task result available."
             
-            # Format the persona as an additional context string if provided
-            persona_str = f"Acting as {persona}. " if persona else ""
+            # Get persona from the parent agent
+            agent_persona = "Default helpful assistant" # Fallback
+            if hasattr(self, 'parent') and self.parent and hasattr(self.parent, 'persona'):
+                agent_persona = self.parent.persona
+            else:
+                logger.warning("ConversationFlow could not access parent agent's persona. Using default.")
             
-            # Use default language if not provided
-            language_str = language or "English"
+            # Format conversation history
+            history_text = self._format_conversation_history(conversation_history)
             
             # Create prompt variables
             prompt_vars = {
                 "message": message,
-                "language": language_str,
-                "persona": persona_str,
-                "context_text": self._format_context(context) if context else "",
+                "language": language,
+                "persona": agent_persona, # Pass the agent's persona
+                "conversation_history": history_text,
+                "memory_context_summary": memory_context_summary,
+                "task_result_summary": task_result_summary,
             }
             
             # Log the conversation input
             logger.debug(f"Conversation input: message='{message}'")
             
-            try:
-                # Create the conversation prompt
-                conversation_prompt = ConversationPrompt()
-                llm = await provider_registry.get(ProviderType.LLM, "llamacpp")
-                # Generate response using LLM
-                result = await llm.generate_structured(
-                    prompt=conversation_prompt,
-                    output_type=ConversationResponse,
-                    model_name="default",
-                    prompt_variables=prompt_vars,
-                )
-                
-                # Extract the response text from the structured output
-                response = result.response
-                
-                # Clean up the response to remove any code blocks or excessive formatting
-                response = self._clean_response(response)
-                
-                # Add the response to the agent state as a system message if we have access to the state
-                if hasattr(self, 'context') and self.context and hasattr(self.context, 'state'):
-                    state = self.context.state
-                    if hasattr(state, 'add_system_message') and callable(state.add_system_message):
-                        state.add_system_message(response)
-                        logger.debug("Added system message to agent state")
-                
-            except Exception as e:
-                error_details = f"Error: {type(e).__name__}: {str(e)}"
-                logger.error(f"Failed to generate response: {error_details}", exc_info=True)
-                
-                # Create error response
-                response = f"I'm sorry, but I encountered an error while processing your message. {error_details}"
-                
-                # Add error response to state
-                if hasattr(self, 'context') and self.context and hasattr(self.context, 'state'):
-                    state = self.context.state
-                    if hasattr(state, 'add_system_message') and callable(state.add_system_message):
-                        state.add_system_message(response)
-                        logger.debug("Added error system message to agent state")
-                
-                # Return a more detailed error message directly
-                return ConversationOutput(
-                    response=response
-                )
+            # Create the conversation prompt
+            conversation_prompt = ConversationPrompt()
+            llm = await provider_registry.get(ProviderType.LLM, "llamacpp")
             
-            # Create and return the output directly
+            # Generate response using LLM with structured output
+            result = await llm.generate_structured(
+                prompt=conversation_prompt,
+                output_type=ConversationResponse,
+                model_name="default",
+                prompt_variables=prompt_vars,
+            )
+            
+            # Get the response
+            response = result.response
+            
+            # Add the response to the agent state as a system message if we have access to the state
+            # Note: This logic might be better placed in the agent core after the flow result is received
+            # if hasattr(self, 'context') and self.context and hasattr(self.context, 'state'):
+            #     state = self.context.state
+            #     if hasattr(state, 'add_system_message') and callable(state.add_system_message):
+            #         state.add_system_message(response)
+            #         logger.debug("Added system message to agent state")
+            
+            # Create and return the output
             return ConversationOutput(
                 response=response
             )
-        
+            
         except Exception as e:
             # Log unexpected errors
             logger.error(f"Unexpected error in conversation pipeline: {str(e)}", exc_info=True)
             
-            # Create error response
-            response = f"I apologize, but I encountered an unexpected error: {str(e)}"
-            
-            # Add error response to state
-            if hasattr(self, 'context') and self.context and hasattr(self.context, 'state'):
-                state = self.context.state
-                if hasattr(state, 'add_system_message') and callable(state.add_system_message):
-                    state.add_system_message(response)
-                    logger.debug("Added unexpected error system message to agent state")
-            
-            # Return the error output directly
-            return ConversationOutput(
-                response=response
-            )
-
-    def _clean_response(self, response: str) -> str:
-        """Clean up the response text.
+            # Re-raise the exception for proper error handling
+            raise
+    
+    def _format_conversation_history(self, conversation_history: List[Dict[str, str]]) -> str:
+        """Format conversation history as text.
         
         Args:
-            response: Response text to clean
+            conversation_history: List of conversation history entries (e.g., {'role': 'user', 'content': 'message'})
             
         Returns:
-            Cleaned response text
+            Formatted conversation history text
         """
-        # Strip any code block markers
-        response = response.replace("```", "")
-        
-        # Strip any markdown formatting but keep the content
-        for marker in ["**", "__", "*", "_", "#", "##", "###"]:
-            response = response.replace(marker, "")
+        if not conversation_history:
+            return "No conversation history available."
             
-        # Strip any common response prefixes
-        for prefix in ["Response:", "Assistant:", "AI:"]:
-            if response.startswith(prefix):
-                response = response[len(prefix):].strip()
-                
-        return response.strip()
-
-    def _format_context(self, context: Dict[str, Any]) -> str:
-        """Format context dictionary into a string for the prompt.
-        
-        Args:
-            context: Context dictionary
+        formatted = []
+        for entry in conversation_history:
+            role = entry.get("role", "unknown").capitalize()
+            content = entry.get("content", "")
+            formatted.append(f"{role}: {content}")
             
-        Returns:
-            Formatted context string
-        """
-        if not context:
-            return ""
-            
-        # Format the context as a string with key-value pairs
-        context_lines = ["Context:"]
-        for key, value in context.items():
-            context_lines.append(f"- {key}: {value}")
-            
-        return "\n".join(context_lines)
-
+        return "\n".join(formatted)
+    
     @classmethod
     def create(cls) -> Flow:
-        """Create a new instance of this flow.
+        """Create an instance of this flow.
         
         Returns:
-            A Flow instance
+            Flow instance
         """
         return cls() 

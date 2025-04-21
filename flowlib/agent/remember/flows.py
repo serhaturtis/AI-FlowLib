@@ -7,7 +7,8 @@ from .models import RecallRequest, RecallResponse, RecallStrategy, MemoryMatch
 
 @flow(
     name="BaseRecallFlow",
-    description="Base flow for memory recall operations that provides core recall functionality"
+    description="Base flow for memory recall operations that provides core recall functionality",
+    is_infrastructure=True
 )
 class BaseRecallFlow(Flow):
     """Base flow for memory recall operations"""
@@ -60,7 +61,8 @@ class BaseRecallFlow(Flow):
 
 @flow(
     name="ContextualRecallFlow",
-    description="Flow for context-aware memory recall that considers surrounding context"
+    description="Flow for context-aware memory recall that considers surrounding context",
+    is_infrastructure=True
 )
 class ContextualRecallFlow(BaseRecallFlow):
     """Flow for context-based memory recall"""

@@ -128,7 +128,7 @@ class FileStatePersister(BaseStatePersister):
             return AgentState(
                 task_description=task_description,
                 task_id=task_id,
-                data=state_dict
+                initial_state_data=state_dict
             )
             
         except Exception as e:

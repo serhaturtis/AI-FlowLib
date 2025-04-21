@@ -7,12 +7,15 @@ task progress.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Union, Type
 
 # Import prompts to ensure registration
 from .prompts import (
     DefaultReflectionPrompt,
     TaskCompletionReflectionPrompt
+)
+from .prompts.step_reflection import (
+    DefaultStepReflectionPrompt
 )
 
 from ..core.base import BaseComponent
@@ -22,10 +25,13 @@ from ..models.state import AgentState
 from ...providers import ProviderType
 from ...providers.registry import provider_registry
 from ...flows.results import FlowResult
-from .models import ReflectionResult, ReflectionInput
+from .models import ReflectionResult, ReflectionInput, StepReflectionResult, StepReflectionInput
 from .interfaces import ReflectionInterface
 from ...providers.llm.base import LLMProvider
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from ...utils.formatting.conversation import format_execution_history
+from ..models.plan import PlanExecutionOutcome # Assuming rename
+from .models import PlanReflectionContext # Assuming rename
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +70,7 @@ class AgentReflection(BaseComponent, ReflectionInterface):
         
         # Execution state
         self._reflection_template = None
+        self._step_reflection_template = None # Add template for step reflection
     
     def _check_initialized(self) -> None:
         """Check if the reflection component is initialized.
@@ -113,6 +120,7 @@ class AgentReflection(BaseComponent, ReflectionInterface):
             
             # Load template
             self._reflection_template = await self._load_reflection_template()
+            self._step_reflection_template = await self._load_step_reflection_template() # Load step template
             
             logger.info(f"Initialized agent reflection with model {self._config.model_name}")
             
@@ -129,114 +137,132 @@ class AgentReflection(BaseComponent, ReflectionInterface):
     
     async def reflect(
         self,
-        state: AgentState,
-        flow_name: str,
-        flow_inputs: Dict[str, Any],
-        flow_result: FlowResult,
-        memory_context: Optional[str] = None
+        plan_context: PlanReflectionContext # Use the new context model
     ) -> ReflectionResult:
         """
-        Analyze execution results and update state.
+        Analyze the outcome of a full plan execution based on collected step reflections.
         
         Args:
-            state: Current agent state
-            flow_name: Name of the flow that was executed
-            flow_inputs: Inputs that were used for the flow
-            flow_result: Result from the flow execution
-            memory_context: Optional memory context for reflection
+            plan_context: Context containing overall plan status and step reflections.
             
         Returns:
             ReflectionResult with analysis, progress and completion status
             
         Raises:
             NotInitializedError: If reflection is not initialized
-            ReflectionError: If reflection fails or flow_result is not a valid FlowResult
+            ReflectionError: If reflection fails or plan_outcome is malformed
         """
         self._check_initialized()
         
-        # Ensure flow_result is a valid FlowResult
-        if not isinstance(flow_result, FlowResult):
-            raise ReflectionError(
-                message=f"Expected FlowResult instance, got {type(flow_result).__name__}",
-                agent=self.parent.name if self.parent else self.name
-            )
-        
         try:
-            # If flow_inputs is not a BaseModel, convert it to one
-            from pydantic import create_model
-            if not isinstance(flow_inputs, BaseModel):
-                # Create a dynamic model from the dictionary
-                dynamic_inputs = create_model(
-                    f"{flow_name}Inputs",
-                    **{k: (type(v), ...) for k, v in flow_inputs.items()}
-                )
-                # Instantiate the model with the input values
-                flow_inputs_model = dynamic_inputs(**flow_inputs)
-            else:
-                flow_inputs_model = flow_inputs
+            if not self._reflection_template:
+                raise NotInitializedError(self._name, "reflect", "Overall reflection template not loaded")
             
-            # Prepare reflection input
-            reflection_input = await self._prepare_reflection_input(
-                state=state,
-                flow_name=flow_name,
-                flow_inputs=flow_inputs_model,
-                flow_result=flow_result,
-                memory_context=memory_context
+            # Format step reflections for the prompt
+            step_reflections_formatted = self._format_step_reflections(plan_context.step_reflections)
+            
+            # Prepare variables for the overall reflection template
+            template_variables = {
+                "task_description": plan_context.task_description,
+                "plan_status": plan_context.plan_status,
+                "plan_error": plan_context.plan_error or "No overall plan error reported.",
+                "step_reflections_summary": step_reflections_formatted,
+                "execution_history_text": plan_context.execution_history_text,
+                "state_summary": plan_context.state_summary,
+                "current_progress": plan_context.current_progress
+            }
+            
+            # Generate overall reflection using structured generation
+            result = await self._llm_provider.generate_structured(
+                prompt=self._reflection_template,
+                output_type=ReflectionResult, # The final output is still ReflectionResult
+                model_name=self._config.model_name,
+                prompt_variables=template_variables
             )
+
+            # Ensure progress is clamped
+            result.progress = max(0, min(100, result.progress))
             
-            # Execute reflection and return the result directly
-            return await self._execute_reflection(reflection_input)
+            logger.info("Overall plan reflection complete.")
+            return result
             
         except Exception as e:
+            logger.error(f"Overall reflection failed: {str(e)}", exc_info=True)
             raise ReflectionError(
                 message=f"Reflection failed: {str(e)}",
                 agent=self.parent.name if self.parent else self.name,
                 cause=e
             ) from e
     
-    async def _load_reflection_template(self) -> object:
-        """Load the reflection prompt template.
+    def _format_step_reflections(self, step_reflections: List[StepReflectionResult]) -> str:
+        """Formats a list of StepReflectionResult into a string for the prompt."""
+        if not step_reflections:
+            return "No step reflections were recorded for this plan execution."
         
-        This method attempts to load the template in the following order:
-        1. From the parent component if it has a template getter
-        2. From the resource registry
-        3. Default built-in template
+        lines = ["Summary of Plan Step Reflections:"]
+        for i, sr in enumerate(step_reflections):
+            lines.append(f"  Step {i+1} (ID: {sr.step_id}):")
+            lines.append(f"    - Success: {sr.step_success}")
+            lines.append(f"    - Reflection: {sr.reflection}")
+            if sr.key_observation:
+                lines.append(f"    - Key Observation: {sr.key_observation}")
+        return "\n".join(lines)
+    
+    async def _load_reflection_template(self) -> object:
+        """Load the overall reflection prompt template.
+
+        Prioritizes loading from resource_registry["reflection_default"],
+        then falls back to instantiating DefaultReflectionPrompt.
         
         Returns:
             Reflection prompt template
         """
-        # Try to get the template from parent
-        if self.parent and hasattr(self.parent, "get_template"):
-            try:
-                template = self.parent.get_template("reflection")
-                if template:
-                    logger.info("Using reflection template from parent")
-                    return template
-            except Exception as e:
-                logger.warning(f"Failed to load reflection template from parent: {str(e)}")
-        
         # Try to get the standard template from registry
         from ...resources.registry import resource_registry
         from ...resources.constants import ResourceType
         
+        template_name = "reflection_default"
         try:
-            if resource_registry.contains("reflection_default", ResourceType.PROMPT):
-                template = resource_registry.get_sync("reflection_default", ResourceType.PROMPT)
-                logger.info("Using reflection_default template from registry")
+            if resource_registry.contains(template_name, ResourceType.PROMPT):
+                template = resource_registry.get_sync(template_name, ResourceType.PROMPT)
+                logger.info(f"Using '{template_name}' template from resource registry for overall reflection.")
                 return template
         except Exception as e:
             logger.warning(f"Failed to get reflection template from registry: {str(e)}")
         
         # If we reach here, use the default implementation directly
-        logger.info("Using built-in DefaultReflectionPrompt")
+        logger.info(f"'{template_name}' not found in registry. Using built-in DefaultReflectionPrompt for overall reflection.")
         return DefaultReflectionPrompt()
+    
+    async def _load_step_reflection_template(self) -> object:
+        """Load the step reflection prompt template.
+
+        Prioritizes loading from resource_registry["step_reflection_default"],
+        then falls back to instantiating DefaultStepReflectionPrompt.
+
+        Returns:
+            Step reflection prompt template
+        """
+        # Try to get the standard template from registry
+        from ...resources.registry import resource_registry
+        from ...resources.constants import ResourceType
+        template_name = "step_reflection_default"
+        try:
+            if resource_registry.contains(template_name, ResourceType.PROMPT):
+                template = resource_registry.get_sync(template_name, ResourceType.PROMPT)
+                logger.info(f"Using '{template_name}' template from resource registry for step reflection.")
+                return template
+        except Exception as e:
+            logger.warning(f"Failed to get step reflection template from registry: {str(e)}")
+
+        # If we reach here, use the default implementation directly
+        logger.info(f"'{template_name}' not found in registry. Using built-in DefaultStepReflectionPrompt for step reflection.")
+        return DefaultStepReflectionPrompt()
     
     async def _prepare_reflection_input(
         self,
         state: AgentState,
-        flow_name: str,
-        flow_inputs: BaseModel,
-        flow_result: FlowResult,
+        plan_outcome: PlanExecutionOutcome,
         memory_context: Optional[str] = None
     ) -> ReflectionInput:
         """
@@ -244,9 +270,7 @@ class AgentReflection(BaseComponent, ReflectionInterface):
         
         Args:
             state: Agent state
-            flow_name: Name of the executed flow
-            flow_inputs: Inputs provided to the flow (a Pydantic model)
-            flow_result: Result from flow execution (a FlowResult)
+            plan_outcome: The outcome object from executing a plan.
             memory_context: Optional memory context for this reflection
             
         Returns:
@@ -255,6 +279,30 @@ class AgentReflection(BaseComponent, ReflectionInterface):
         Raises:
             ReflectionError: If required data is missing or invalid
         """
+        # Extract information from plan_outcome
+        plan_status = plan_outcome.status
+        final_flow_result = plan_outcome.result # This might be None or a FlowResult
+        plan_error = plan_outcome.error # String error message
+        
+        # Synthesize information for the reflection prompt
+        # Use a generic name or indicate plan status
+        reflection_flow_name = "PlanExecution"
+        if plan_status == "ERROR":
+            reflection_flow_name = f"PlanExecution_Failed"
+        elif plan_status == "NO_ACTION_NEEDED":
+            reflection_flow_name = "PlanExecution_NoAction"
+        
+        # Prepare a FlowResult-like structure for the prompt, even on failure
+        # Ensure final_flow_result is always a FlowResult instance
+        if not isinstance(final_flow_result, FlowResult):
+            logger.debug(f"plan_outcome did not contain a FlowResult (Status: {plan_status}). Creating dummy result.")
+            final_flow_result = FlowResult(
+                flow_name=reflection_flow_name,
+                status=plan_status,
+                message=plan_error or "No result available",
+                data={}
+            )
+        
         # Ensure required data is present
         if not state:
             raise ReflectionError(
@@ -275,17 +323,31 @@ class AgentReflection(BaseComponent, ReflectionInterface):
             
         # Format execution history
         execution_history_text = self._format_execution_history(state)
-            
-        # Extract planning rationale
-        planning_rationale = self._extract_planning_rationale(state)
+        
+        # Extract planning rationale from the *current plan* if available, otherwise fallback
+        planning_rationale = "No specific plan rationale available"
+        # Check if current_plan exists in the state's underlying model data
+        current_plan_data = state._data.get("current_plan")
+        if current_plan_data and isinstance(current_plan_data, dict):
+            if current_plan_data.get("overall_rationale"):
+                planning_rationale = current_plan_data["overall_rationale"]
+            elif current_plan_data.get("steps") and len(current_plan_data["steps"]) > 0:
+                # Fallback to first step rationale if no overall rationale
+                first_step = current_plan_data["steps"][0]
+                if isinstance(first_step, dict) and first_step.get("rationale"):
+                    planning_rationale = first_step["rationale"]
+        else:
+            # Fallback to history extraction if no current plan info in state
+            planning_rationale = self._extract_planning_rationale_from_history(state)
         
         # Create a new ReflectionInput model
+        # Note: flow_inputs is set to None as inputs are now embedded in history or not relevant in aggregate
         return ReflectionInput(
             task_description=state.task_description,
-            flow_name=flow_name,
-            flow_status=str(flow_result.status),
-            flow_result=flow_result,
-            flow_inputs=flow_inputs,
+            flow_name=reflection_flow_name, # Use synthesized name
+            flow_status=plan_status, # Use overall plan status
+            flow_result=final_flow_result, # Pass the FlowResult (real or dummy)
+            flow_inputs=None, 
             state_summary=state_summary,
             execution_history_text=execution_history_text,
             planning_rationale=planning_rationale,
@@ -304,22 +366,9 @@ class AgentReflection(BaseComponent, ReflectionInterface):
         Returns:
             Formatted execution history text
         """
-        if not state.execution_history or len(state.execution_history) == 0:
-            return "No execution history available"
-            
-        history_items = []
-        for i, entry in enumerate(state.execution_history):
-            if isinstance(entry, dict):
-                flow = entry.get('flow_name', 'unknown')
-                status = entry.get('status', 'unknown')
-                cycle = entry.get('cycle', 0)
-                history_items.append(f"{i+1}. Cycle {cycle}: Executed {flow} with status {status}")
-            else:
-                history_items.append(f"{i+1}. {str(entry)}")
-                
-        return "\n".join(history_items)
+        return format_execution_history(state.execution_history)
     
-    def _extract_planning_rationale(self, state: AgentState) -> str:
+    def _extract_planning_rationale_from_history(self, state: AgentState) -> str:
         """
         Extract planning rationale from recent execution history.
         
@@ -370,7 +419,11 @@ class AgentReflection(BaseComponent, ReflectionInterface):
             flow_result_formatted = self._format_flow_result(reflection_input.flow_result)
             
             # Format flow inputs for template
-            flow_inputs_formatted = self._format_flow_inputs(reflection_input.flow_inputs)
+            # Handle case where flow_inputs might be None for plan-level reflection
+            if reflection_input.flow_inputs is not None:
+                flow_inputs_formatted = self._format_flow_inputs(reflection_input.flow_inputs)
+            else:
+                flow_inputs_formatted = "N/A (Plan Level Reflection)"
                 
             # Prepare variables for the template
             template_variables = {
@@ -482,3 +535,55 @@ class AgentReflection(BaseComponent, ReflectionInterface):
                 lines.append(f"{key}: {value}")
         
         return "\n".join(lines)
+
+    async def step_reflect(
+        self,
+        step_input: StepReflectionInput # Use the dedicated input model
+    ) -> StepReflectionResult:
+        """Analyze the outcome of a single plan step."""
+        self._check_initialized()
+
+        if not self._step_reflection_template:
+            raise NotInitializedError(self._name, "step_reflect", "Step reflection template not loaded")
+
+        try:
+            # Format inputs and results using existing helper methods
+            flow_inputs_formatted = self._format_flow_inputs(step_input.flow_inputs)
+            flow_result_formatted = self._format_flow_result(step_input.flow_result)
+
+            # Prepare variables for the template
+            template_variables = {
+                "task_description": step_input.task_description,
+                "step_id": step_input.step_id,
+                "step_intent": step_input.step_intent,
+                "step_rationale": step_input.step_rationale,
+                "flow_name": step_input.flow_name,
+                "flow_inputs_formatted": flow_inputs_formatted,
+                "flow_result_formatted": flow_result_formatted,
+                "current_progress": step_input.current_progress
+            }
+
+            # Generate reflection using structured generation
+            result = await self._llm_provider.generate_structured(
+                prompt=self._step_reflection_template,
+                output_type=StepReflectionResult,
+                model_name=self._config.model_name,
+                prompt_variables=template_variables
+            )
+
+            # Ensure step_id is correctly carried over if LLM misses it
+            if not result.step_id:
+                result.step_id = step_input.step_id
+
+            logger.info(f"Step reflection complete for step ID: {result.step_id}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Step reflection failed for step ID {step_input.step_id}: {str(e)}", exc_info=True)
+            # Return a default failure reflection result?
+            return StepReflectionResult(
+                step_id=step_input.step_id,
+                reflection=f"Step reflection failed: {str(e)}",
+                step_success=False, # Assume failure if reflection errors
+                key_observation="Reflection process encountered an error."
+            )

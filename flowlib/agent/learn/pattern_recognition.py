@@ -1,6 +1,7 @@
 @flow(
     name="PatternRecognitionFlow",
-    description="Flow for recognizing patterns in content with confidence scoring and metadata extraction"
+    description="Flow for recognizing patterns in content with confidence scoring and metadata extraction",
+    is_infrastructure=True
 )
 class PatternRecognitionFlow(BaseLearningFlow):
     """Flow for recognizing patterns in content"""

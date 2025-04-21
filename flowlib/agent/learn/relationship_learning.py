@@ -14,7 +14,8 @@ from ...core.context import Context
 
 @flow(
     name="RelationshipLearningFlow",
-    description="Flow for learning relationships between entities and their properties"
+    description="Flow for learning relationships between entities and their properties",
+    is_infrastructure=True
 )
 class RelationshipLearningFlow(BaseLearningFlow):
     """Flow for learning relationships between entities"""
@@ -97,7 +98,7 @@ class RelationshipLearningFlow(BaseLearningFlow):
                         target_entity_id=target_entity.id,
                         properties=rel_info["properties"],
                         confidence=rel_info["confidence"],
-                        source=request.content[:100]
+                        source=request.content
                     )
                     relationships.append(relationship)
         

@@ -10,7 +10,8 @@ from .flows import BaseRecallFlow
 
 @flow(
     name="TemporalRecallFlow",
-    description="Flow for time-based memory recall that retrieves information based on temporal context"
+    description="Flow for time-based memory recall that retrieves information based on temporal context",
+    is_infrastructure=True
 )
 class TemporalRecallFlow(BaseRecallFlow):
     """Flow for time-based memory recall"""

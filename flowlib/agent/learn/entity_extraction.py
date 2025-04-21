@@ -19,7 +19,8 @@ from .models import (
 
 @flow(
     name="EntityExtractionFlow", 
-    description="Extracts entities from content and stores them in memory for later use"
+    description="Extracts entities from content and stores them in memory for later use",
+    is_infrastructure=True
 )
 class EntityExtractionFlow(BaseLearningFlow):
     """Flow for extracting entities from content"""
@@ -66,7 +67,7 @@ class EntityExtractionFlow(BaseLearningFlow):
                     type=entity_info["type"],
                     properties=entity_info["properties"],
                     confidence=entity_info["confidence"],
-                    source=request.content[:100]  # Use first 100 chars as source
+                    source=request.content
                 )
                 entities.append(entity)
         

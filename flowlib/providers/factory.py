@@ -52,6 +52,12 @@ PROVIDER_IMPLEMENTATIONS: Dict[str, Dict[str, Type[Provider]]] = {
         "localfile": None,
         "file": None,
     },
+    ProviderType.EMBEDDING: {
+        "llamacpp": None,
+    },
+    ProviderType.GRAPH_DB: {
+        "neo4j": None,
+    },
 }
 
 def create_provider(
@@ -116,8 +122,8 @@ def create_provider(
         )
         
     try:
-        # Create provider instance with specified name
-        provider = provider_class(name=name, **kwargs)
+        # Create provider instance, passing kwargs as the settings dict
+        provider = provider_class(name=name, settings=kwargs)
         
         # Register if requested
         if register:
@@ -215,6 +221,12 @@ def _import_provider_class(provider_type: str, implementation: str) -> Type[Prov
             "pinecone": "PineconeProvider",
             "qdrant": "QdrantProvider",
         },
+        ProviderType.EMBEDDING: {
+            "llamacpp": "LlamaCppEmbeddingProvider",
+        },
+        ProviderType.GRAPH_DB: {
+            "neo4j": "Neo4jProvider",
+        },
     }
     
     # Map of provider types to modules
@@ -225,6 +237,8 @@ def _import_provider_class(provider_type: str, implementation: str) -> Type[Prov
         ProviderType.MESSAGE_QUEUE: "flowlib.providers.mq",
         ProviderType.CACHE: "flowlib.providers.cache",
         ProviderType.STORAGE: "flowlib.providers.storage",
+        ProviderType.EMBEDDING: "flowlib.providers.embedding",
+        ProviderType.GRAPH_DB: "flowlib.providers.graph",
     }
     
     # Check if we have a mapping for this provider type and implementation
@@ -261,6 +275,14 @@ def _import_provider_class(provider_type: str, implementation: str) -> Type[Prov
             elif implementation == "qdrant":
                 from ..providers.vector.qdrant_provider import QdrantProvider
                 return QdrantProvider
+        elif provider_type == ProviderType.EMBEDDING:
+            if implementation == "llamacpp":
+                from ..providers.embedding.llama_cpp_provider import LlamaCppEmbeddingProvider
+                return LlamaCppEmbeddingProvider
+        elif provider_type == ProviderType.GRAPH_DB:
+            if implementation == "neo4j":
+                from ..providers.graph.neo4j_provider import Neo4jProvider
+                return Neo4jProvider
         
         # If we get here, something went wrong with our mappings
         raise ImportError(f"Provider import failed for {provider_type}/{implementation}")
@@ -288,6 +310,8 @@ def _import_provider_type(provider_type: str) -> Type[Provider]:
         ProviderType.CACHE: "from ..providers.cache.base import CacheProvider; return CacheProvider",
         ProviderType.VECTOR_DB: "from ..providers.vector.base import VectorDBProvider; return VectorDBProvider",
         ProviderType.STORAGE: "from ..providers.storage.base import StorageProvider; return StorageProvider",
+        ProviderType.EMBEDDING: "from ..providers.embedding.base import EmbeddingProvider; return EmbeddingProvider",
+        ProviderType.GRAPH_DB: "from ..providers.graph.base import GraphDBProvider; return GraphDBProvider",
     }
     
     # Get import statement

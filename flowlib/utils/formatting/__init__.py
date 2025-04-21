@@ -16,10 +16,11 @@ from flowlib.utils.formatting.conversation import (
     format_state,
     format_history,
     format_flows,
-    format_agent_execution_details
+    format_agent_execution_details,
+    format_execution_history
 )
 from flowlib.utils.formatting.json import extract_json, format_json
-from flowlib.utils.formatting.schema import format_schema_model, format_schema_description
+from flowlib.utils.pydantic.schema import get_model_schema_text, model_to_simple_json_schema
 from flowlib.utils.formatting.serialization import make_serializable, format_execution_details
 
 __all__ = [
@@ -38,14 +39,15 @@ __all__ = [
     "format_history",
     "format_flows",
     "format_agent_execution_details",
+    "format_execution_history",
     
     # JSON formatting
     "extract_json",
     "format_json",
     
     # Schema formatting
-    "format_schema_model",
-    "format_schema_description",
+    "get_model_schema_text",
+    "model_to_simple_json_schema",
     
     # Serialization
     "make_serializable",

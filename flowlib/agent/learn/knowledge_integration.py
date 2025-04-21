@@ -14,7 +14,8 @@ from ...core.context import Context
 
 @flow(
     name="KnowledgeIntegrationFlow",
-    description="Flow for integrating new knowledge with existing knowledge, resolving conflicts and updating metadata"
+    description="Flow for integrating new knowledge with existing knowledge, resolving conflicts and updating metadata",
+    is_infrastructure=True
 )
 class KnowledgeIntegrationFlow(BaseLearningFlow):
     """Flow for integrating new knowledge with existing knowledge"""
@@ -96,7 +97,7 @@ class KnowledgeIntegrationFlow(BaseLearningFlow):
                         type=existing_entity.type,
                         properties={**existing_entity.properties, **entity_info["new_properties"]},
                         confidence=entity_info["confidence"],
-                        source=request.content[:100]
+                        source=request.content
                     )
                     await self.agent.memory.update_entity(updated_entity)
                     entities.append(updated_entity)
@@ -107,7 +108,7 @@ class KnowledgeIntegrationFlow(BaseLearningFlow):
                         type=entity_info["type"],
                         properties=entity_info["properties"],
                         confidence=entity_info["confidence"],
-                        source=request.content[:100]
+                        source=request.content
                     )
                     await self.agent.memory.store_entity(new_entity)
                     entities.append(new_entity)
@@ -133,7 +134,7 @@ class KnowledgeIntegrationFlow(BaseLearningFlow):
                         target_entity_id=existing_rel.target_entity_id,
                         properties={**existing_rel.properties, **rel_info["new_properties"]},
                         confidence=rel_info["confidence"],
-                        source=request.content[:100]
+                        source=request.content
                     )
                     await self.agent.memory.update_relationship(updated_rel)
                     relationships.append(updated_rel)
@@ -146,7 +147,7 @@ class KnowledgeIntegrationFlow(BaseLearningFlow):
                         target_entity_id=rel_info["target_id"],
                         properties=rel_info["properties"],
                         confidence=rel_info["confidence"],
-                        source=request.content[:100]
+                        source=request.content
                     )
                     await self.agent.memory.store_relationship(new_rel)
                     relationships.append(new_rel)

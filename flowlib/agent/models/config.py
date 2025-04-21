@@ -78,42 +78,72 @@ class ReflectionConfig(BaseModel):
     temperature: float = Field(default=0.7, description="Temperature for reflection")
 
 
-class MemoryConfig(BaseModel):
-    """
-    Configuration for the agent memory system.
-    
-    Attributes:
-        vector_config: Configuration for vector memory
-        working_config: Configuration for working memory
-        use_vector_memory: Whether to use vector memory
-        use_working_memory: Whether to use working memory
-        store_execution_history: Whether to store execution history
-        default_ttl: Default time-to-live for memory items in seconds
-    """
-    vector_config: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Configuration for vector memory"
+class WorkingMemoryConfig(BaseModel):
+    """Configuration for WorkingMemory."""
+    default_ttl_seconds: Optional[int] = Field(
+        default=3600, 
+        description="Default time-to-live for items in seconds (None means no expiry)"
     )
-    working_config: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Configuration for working memory"
+    # Add other WorkingMemory specific settings if needed (e.g., cleanup interval)
+
+
+class VectorMemoryConfig(BaseModel):
+    """Configuration for VectorMemory."""
+    vector_provider_name: str = Field(
+        default="chroma", # Changed default to chroma
+        description="Name of the vector database provider (e.g., qdrant, chroma)" 
     )
-    use_vector_memory: bool = Field(
-        default=True,
-        description="Whether to use vector memory"
+    embedding_provider_name: str = Field(
+        default="default_embedding", # Example default - needs configuration elsewhere
+        description="Name of the embedding model provider"
     )
-    use_working_memory: bool = Field(
-        default=True,
-        description="Whether to use working memory"
+    # Add provider-specific configs if necessary, or handle them via provider registry
+
+
+class KnowledgeMemoryConfig(BaseModel):
+    """Configuration for KnowledgeBaseMemory."""
+    graph_provider_name: str = Field(
+        default="neo4j",
+        description="Name of the graph database provider (e.g., neo4j, in_memory_graph)"
+    )
+    # Add nested settings for the chosen provider
+    provider_settings: Dict[str, Any] = Field(
+        default_factory=lambda: { # Default to matching docker-compose
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "pleaseChangeThisPassword"
+        },
+        description="Settings specific to the chosen graph_provider_name."
+    )
+
+
+class ComprehensiveMemoryConfig(BaseModel):
+    """Configuration for the ComprehensiveMemory system."""
+    working_memory: WorkingMemoryConfig = Field(
+        default_factory=WorkingMemoryConfig,
+        description="Configuration for the working memory component."
+    )
+    vector_memory: VectorMemoryConfig = Field(
+        default_factory=VectorMemoryConfig,
+        description="Configuration for the vector memory component."
+    )
+    knowledge_memory: KnowledgeMemoryConfig = Field(
+        default_factory=KnowledgeMemoryConfig,
+        description="Configuration for the knowledge base memory component."
+    )
+    fusion_provider_name: str = Field(
+        default="llamacpp", 
+        description="LLM Provider name for memory fusion/synthesis."
+    )
+    fusion_model_name: str = Field(
+        default="default", 
+        description="LLM Model name for memory fusion/synthesis."
     )
     store_execution_history: bool = Field(
         default=True,
-        description="Whether to store execution history"
+        description="Whether to store flow execution history in memory (typically working memory)."
     )
-    default_ttl: Optional[int] = Field(
-        default=None,
-        description="Default time-to-live for memory items in seconds"
-    )
+
 
 class StatePersistenceConfig(BaseModel):
     """
@@ -177,6 +207,7 @@ class AgentConfig(BaseModel):
     
     Attributes:
         name: Name of the agent
+        persona: Description of the agent's personality/style.
         task_id: Unique identifier for the agent task
         task_description: Description of the agent task
         engine_config: Configuration for the agent engine
@@ -188,6 +219,7 @@ class AgentConfig(BaseModel):
         components: Configuration for custom components
     """
     name: str = Field(description="Name of the agent")
+    persona: str = Field(description="Description of the agent's personality/style.")
     task_id: Optional[str] = Field(
         default=None,
         description="Unique identifier for the agent task"
@@ -208,8 +240,8 @@ class AgentConfig(BaseModel):
         default_factory=lambda: ReflectionConfig(model_name="default", provider_name="llamacpp"),
         description="Configuration for the agent reflection"
     )
-    memory_config: MemoryConfig = Field(
-        default_factory=MemoryConfig,
+    memory_config: ComprehensiveMemoryConfig = Field(
+        default_factory=ComprehensiveMemoryConfig,
         description="Configuration for the agent memory"
     )
     state_config: Optional[StatePersistenceConfig] = Field(

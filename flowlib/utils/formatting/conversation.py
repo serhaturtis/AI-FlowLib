@@ -56,25 +56,34 @@ def format_history(history: List[Dict[str, Any]]) -> str:
     Returns:
         Formatted history string
     """
+    # Normalize history format to match the expectations of format_execution_history
     if not history:
         return "No execution history yet."
-        
-    result = []
-    for i, step in enumerate(history, 1):
-        if step.get("action") == "execute_flow":
-            result.append(f"""
-Step {i}:
-  Flow: {step.get('flow')}
-  Reasoning: {step.get('reasoning')}
-  Reflection: {step.get('reflection', 'None')}
-""")
-        elif step.get("action") == "error":
-            result.append(f"""
-Step {i}:
-  Error: {step.get('error')}
-""")
     
-    return "\n".join(result)
+    # Convert from the old format to the new standardized format
+    normalized_history = []
+    for step in history:
+        if step.get("action") == "execute_flow":
+            normalized_entry = {
+                "flow_name": step.get("flow", "unknown"),
+                "cycle": len(normalized_history) + 1,
+                "status": "completed",
+                "reasoning": step.get("reasoning", ""),
+                "reflection": step.get("reflection", "")
+            }
+            normalized_history.append(normalized_entry)
+        elif step.get("action") == "error":
+            normalized_entry = {
+                "flow_name": "error",
+                "cycle": len(normalized_history) + 1,
+                "status": "error",
+                "reasoning": "",
+                "reflection": step.get("error", "Unknown error")
+            }
+            normalized_history.append(normalized_entry)
+    
+    # Use the standardized function
+    return format_execution_history(normalized_history)
 
 
 def format_flows(flows: List[Dict[str, Any]]) -> str:
@@ -115,6 +124,66 @@ def format_flows(flows: List[Dict[str, Any]]) -> str:
     return "\n".join(result)
 
 
+def format_execution_history(history_entries: List[Dict[str, Any]]) -> str:
+    """Format execution history from agent state or history entries into a standardized text format.
+    
+    This is the standard function for formatting execution history for prompts
+    across all agent components.
+    
+    Args:
+        history_entries: List of execution history entries, typically from AgentState.execution_history
+            
+    Returns:
+        Formatted history string
+    """
+    if not history_entries or len(history_entries) == 0:
+        return "No execution history available"
+        
+    history_items = []
+    for i, entry in enumerate(history_entries, 1):
+        if isinstance(entry, dict):
+            # Extract standard fields with fallbacks
+            flow = entry.get('flow_name', 'unknown')
+            cycle = entry.get('cycle', 0)
+            
+            # Extract status - handling both formats that might be used
+            status = "unknown"
+            if "status" in entry:
+                status = entry["status"]
+            elif "result" in entry and isinstance(entry["result"], dict):
+                status = entry["result"].get("status", "unknown")
+                
+            # Get reasoning if available
+            reasoning = ""
+            if "reasoning" in entry:
+                reasoning = entry["reasoning"]
+            elif "inputs" in entry and isinstance(entry["inputs"], dict):
+                reasoning = entry["inputs"].get("reasoning", "")
+                
+            # Get reflection if available
+            reflection = ""
+            if "reflection" in entry:
+                reflection = entry["reflection"]
+            elif "result" in entry and isinstance(entry["result"], dict):
+                reflection = entry["result"].get("reflection", "")
+                
+            # Format using all available information
+            entry_text = f"{i}. Cycle {cycle}: Executed {flow} with status {status}"
+            
+            # Add reasoning and reflection if available
+            if reasoning:
+                entry_text += f"\n   Reasoning: {reasoning}"
+            if reflection:
+                entry_text += f"\n   Reflection: {reflection}"
+                    
+            history_items.append(entry_text)
+        else:
+            # Handle non-dict entries (should be rare)
+            history_items.append(f"{i}. {str(entry)}")
+                
+    return "\n".join(history_items)
+
+
 def format_agent_execution_details(details: Dict[str, Any]) -> str:
     """Format agent execution details for CLI display.
     
@@ -150,7 +219,7 @@ def format_agent_execution_details(details: Dict[str, Any]) -> str:
         result.append("\nLatest plan:")
         reasoning = latest_plan.get("reasoning", "No reasoning")
         flow = latest_plan.get("flow", "No flow selected")
-        result.append(f"  Reasoning: {reasoning[:100]}...")
+        result.append(f"  Reasoning: {reasoning}")
         result.append(f"  Selected flow: {flow}")
         
     # Format last execution
@@ -167,7 +236,7 @@ def format_agent_execution_details(details: Dict[str, Any]) -> str:
     if latest_reflection:
         result.append("\nLatest reflection:")
         reflection = latest_reflection.get("reflection", "No reflection available")
-        result.append(f"  {reflection[:200]}...")
+        result.append(f"  {reflection}")
         
     result.append("-----------------------------")
     

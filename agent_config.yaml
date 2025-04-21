@@ -1,0 +1,59 @@
+# Agent Configuration File (agent_config.yaml)
+name: "DualPathAssistant"
+persona: "A helpful and slightly formal AI assistant."
+task_description: "Assist the user" # Default task description
+
+# Task ID will be overridden if resuming a conversation
+task_id: null
+
+engine_config:
+  max_iterations: 10
+  stop_on_error: false
+  log_level: "DEBUG" # Keep DEBUG for now
+  execution_timeout: 60.0
+  planning_timeout: 30.0
+  reflection_timeout: 30.0
+
+planner_config:
+  model_name: "default"
+  provider_name: "llamacpp"
+  planning_temperature: 0.2
+  planning_max_tokens: 1024
+  input_generation_temperature: 0.7
+  input_generation_max_tokens: 1024
+
+reflection_config:
+  model_name: "default"
+  provider_name: "llamacpp"
+  temperature: 0.3
+  max_tokens: 1024
+
+# Memory config can be added here if needed later
+# memory_config:
+#   working_memory:
+#     default_ttl_seconds: 3600
+#   vector_memory:
+#     vector_provider_name: "chroma"
+#     embedding_provider_name: "default_embedding"
+#   knowledge_memory:
+#     graph_provider_name: "neo4j"
+#     provider_settings:
+#       uri: "bolt://localhost:7687"
+#       username: "neo4j"
+#       password: "pleaseChangeThisPassword"
+#   fusion_provider_name: "llamacpp"
+#   fusion_model_name: "default"
+#   store_execution_history: true
+
+state_config:
+  persistence_type: "file"
+  base_path: "./states" # Relative path to state directory
+  auto_save: true
+  auto_load: false # Will be overridden if task_id is provided
+  save_frequency: "change" # Or 'cycle' etc.
+
+# Provider config can be added if needed for non-registered providers
+# provider_config: {}
+
+# Custom components config if needed
+# components: {} 

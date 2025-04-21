@@ -12,6 +12,7 @@ from ...flows.decorators import flow
 from ...flows.base import Flow
 from ...flows.registry import stage_registry
 
+from ..registry import agent_registry
 from ..core.agent import AgentCore
 from ..models.config import AgentConfig
 
@@ -140,7 +141,19 @@ def agent(
         
         # Store the wrapper class
         cls.__agent_class__ = AgentWrapper
-        
+
+        # === Register the AgentWrapper class ===
+        agent_name = name or cls.__name__
+        # Construct metadata for registration
+        agent_metadata = {
+            "provider_name": provider_name,
+            "model_name": model_name,
+            "agent_type": "core", # Indicate it uses AgentCore
+            **kwargs
+        }
+        agent_registry.register(name=agent_name, agent_class=AgentWrapper, metadata=agent_metadata)
+        # ========================================
+
         return cls
     
     return decorator
@@ -237,4 +250,40 @@ def conversation_handler(
         provider_name=provider_name,
         model_name=model_name,
         **kwargs
-    ) 
+    )
+
+def dual_path_agent(
+    name: str,
+    description: str,
+    **kwargs
+) -> Callable:
+    """Decorator for registering DualPathAgent classes.
+    
+    Args:
+        name: Agent name
+        description: Human-readable description of the agent
+        **kwargs: Additional metadata for the agent
+        
+    Returns:
+        Decorator function
+    """
+    def decorator(cls):
+        # Basic validation (optional, uncomment if needed)
+        # from ..core.base import DualPathAgent 
+        # if not issubclass(cls, DualPathAgent):
+        #     raise TypeError(f"Class {cls.__name__} must inherit from DualPathAgent to use @dual_path_agent")
+
+        # Assign metadata attributes
+        setattr(cls, '__agent_name__', name)
+        setattr(cls, '__agent_description__', description)
+        
+        # Combine base metadata with kwargs
+        metadata = {'agent_type': 'dual_path', **kwargs}
+        setattr(cls, '__agent_metadata__', metadata)
+
+        # Register the decorated class directly with the agent_registry
+        agent_registry.register(name=name, agent_class=cls, metadata=metadata)
+
+        logger.debug(f"Decorated class {cls.__name__} as DualPathAgent with name='{name}'")
+        return cls
+    return decorator 

@@ -5,14 +5,18 @@ for Neo4j, a popular open-source graph database.
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Generic, TypeVar, Union
 from datetime import datetime
+from abc import abstractmethod
 
 from ...core.errors import ProviderError, ErrorContext
 from ..decorators import provider
 from ..constants import ProviderType
 from .base import GraphDBProvider, GraphDBProviderSettings
 from .models import Entity, EntityAttribute, EntityRelationship
+
+# Import necessary types for Provider inheritance
+from ..base import ProviderSettings # Already used by GraphDBProviderSettings
 
 logger = logging.getLogger(__name__)
 
@@ -64,27 +68,29 @@ class Neo4jProviderSettings(GraphDBProviderSettings):
     max_connection_pool_size: int = 100
 
 
+# Type variable for settings
+SettingsType = TypeVar('SettingsType', bound=Neo4jProviderSettings)
+
 @provider(provider_type=ProviderType.GRAPH_DB, name="neo4j")
-class Neo4jProvider(GraphDBProvider):
+class Neo4jProvider(GraphDBProvider[Neo4jProviderSettings]):
     """Neo4j graph database provider implementation.
     
     This provider interfaces with Neo4j using the official Python driver,
     mapping entities and relationships to Neo4j's property graph model.
     """
     
-    def __init__(self, name: str = "neo4j", settings: Optional[Neo4jProviderSettings] = None):
+    def __init__(self, name: str = "neo4j", settings: Optional[Union[Dict[str, Any], Neo4jProviderSettings]] = None):
         """Initialize Neo4j graph database provider.
         
         Args:
             name: Provider name
             settings: Provider settings
         """
-        # Create settings explicitly if not provided to avoid TypeVar issues
-        settings = settings or Neo4jProviderSettings()
-        
+        # Initialize GraphDBProvider base - it handles settings creation/assignment
         super().__init__(name=name, settings=settings)
+        # Base class now holds self.settings as Neo4jProviderSettings object
         self._driver: Optional[Driver] = None
-        self._initialized = False
+        # self._initialized is handled by Provider base class
         
     async def _initialize(self) -> None:
         """Initialize the Neo4j connection.
@@ -101,19 +107,17 @@ class Neo4jProvider(GraphDBProvider):
                 provider_name=self.name
             )
         
-        settings = self.settings
-        
         try:
             # Create the Neo4j driver with settings
             self._driver = GraphDatabase.driver(
-                settings.uri,
-                auth=(settings.username, settings.password),
-                encrypted=settings.encryption,
-                trust=settings.trust,
-                connection_timeout=settings.connection_timeout,
-                connection_acquisition_timeout=settings.connection_acquisition_timeout,
-                max_connection_lifetime=settings.max_connection_lifetime,
-                max_connection_pool_size=settings.max_connection_pool_size
+                self.settings.uri,
+                auth=(self.settings.username, self.settings.password),
+                encrypted=self.settings.encryption,
+                trust=self.settings.trust,
+                connection_timeout=self.settings.connection_timeout,
+                connection_acquisition_timeout=self.settings.connection_acquisition_timeout,
+                max_connection_lifetime=self.settings.max_connection_lifetime,
+                max_connection_pool_size=self.settings.max_connection_pool_size
             )
             
             # Verify connection
@@ -122,7 +126,7 @@ class Neo4jProvider(GraphDBProvider):
             # Create indexes and constraints
             await self._setup_schema()
             
-            self._initialized = True
+            # self._initialized is set by Provider base class
             logger.info(f"Neo4j provider '{self.name}' initialized successfully")
             
         except (ServiceUnavailable, AuthError) as e:
@@ -130,8 +134,8 @@ class Neo4jProvider(GraphDBProvider):
                 message=f"Failed to connect to Neo4j: {str(e)}",
                 provider_name=self.name,
                 context=ErrorContext.create(
-                    uri=settings.uri,
-                    username=settings.username
+                    uri=self.settings.uri,
+                    username=self.settings.username
                 ),
                 cause=e
             )
@@ -150,7 +154,7 @@ class Neo4jProvider(GraphDBProvider):
         if self._driver:
             self._driver.close()
             self._driver = None
-            self._initialized = False
+            # self._initialized is handled by Provider base class
             logger.info(f"Neo4j provider '{self.name}' shut down")
     
     async def _setup_schema(self) -> None:
@@ -303,6 +307,63 @@ class Neo4jProvider(GraphDBProvider):
                 cause=e
             )
     
+    def _convert_node_to_entity(self, node_data: Dict[str, Any]) -> Optional[Entity]:
+        """Helper method to convert Neo4j node data dictionary to an Entity object.
+        Assumes `node_data` contains the properties of the node itself.
+        Does NOT handle relationships fetched separately.
+        """
+        try:
+            entity_id = node_data.get("id")
+            if not entity_id:
+                logger.warning("Cannot convert node data to Entity: missing 'id'")
+                return None
+            
+            # Deserialize attributes (handle JSON string or dict)
+            attributes_raw = node_data.get("attributes", {})
+            attributes = {}
+            attributes_dict = {}
+            if isinstance(attributes_raw, str):
+                try:
+                    import json
+                    attributes_dict = json.loads(attributes_raw)
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not decode attributes JSON for entity {entity_id}: {attributes_raw}")
+                    attributes_dict = {}
+            elif isinstance(attributes_raw, dict):
+                attributes_dict = attributes_raw
+            
+            for attr_name, attr_data in attributes_dict.items():
+                if isinstance(attr_data, dict):
+                    attributes[attr_name] = EntityAttribute(
+                        name=attr_name,
+                        value=attr_data.get("value", ""),
+                        confidence=attr_data.get("confidence", 0.8),
+                        source=attr_data.get("source", ""),
+                        timestamp=attr_data.get("timestamp", datetime.now().isoformat())
+                    )
+                else:
+                    # Assume simple value if not a dict
+                    attributes[attr_name] = EntityAttribute(name=attr_name, value=str(attr_data))
+            
+            # Relationships are not handled by this helper as they are not
+            # typically returned directly as node properties in simple MATCH queries.
+            relationships = [] 
+            
+            entity = Entity(
+                id=entity_id,
+                type=node_data.get("type", "unknown"),
+                attributes=attributes,
+                relationships=relationships, # Always empty from this helper
+                tags=node_data.get("tags", []), 
+                source=node_data.get("source", ""),
+                importance=node_data.get("importance", 0.5),
+                last_updated=node_data.get("last_updated", datetime.now().isoformat())
+            )
+            return entity
+        except Exception as e:
+            logger.error(f"Failed to convert node data to entity {node_data.get('id')}: {e}", exc_info=True)
+            return None
+
     async def get_entity(self, entity_id: str) -> Optional[Entity]:
         """Get an entity by ID from Neo4j.
         
@@ -316,7 +377,7 @@ class Neo4jProvider(GraphDBProvider):
             ProviderError: If retrieval fails
         """
         try:
-            # Query the entity with its relationships
+            # Query the entity WITH its relationships
             result = await self._execute_query(
                 """
                 MATCH (e:Entity {id: $id})
@@ -328,6 +389,7 @@ class Neo4jProvider(GraphDBProvider):
                     e.importance as importance,
                     e.last_updated as last_updated,
                     e.attributes as attributes,
+                    e.tags as tags,
                     collect({
                         target_id: target.id,
                         relation_type: r.relation_type,
@@ -344,40 +406,57 @@ class Neo4jProvider(GraphDBProvider):
                 
             record = result[0]
             
+            # --- REVERTED: Use original deserialization logic for get_entity --- 
             # Deserialize attributes
             attributes = {}
-            for attr_name, attr_data in record.get("attributes", {}).items():
-                attributes[attr_name] = EntityAttribute(
-                    name=attr_name,
-                    value=attr_data.get("value", ""),
-                    confidence=attr_data.get("confidence", 0.8),
-                    source=attr_data.get("source", ""),
-                    timestamp=attr_data.get("timestamp", datetime.now().isoformat())
-                )
+            attributes_raw = record.get("attributes", {})
+            attributes_dict = {}
+            if isinstance(attributes_raw, str):
+                 try:
+                     import json
+                     attributes_dict = json.loads(attributes_raw)
+                 except json.JSONDecodeError:
+                     logger.warning(f"Could not decode attributes JSON for entity {entity_id}: {attributes_raw}")
+            elif isinstance(attributes_raw, dict):
+                 attributes_dict = attributes_raw
+                 
+            for attr_name, attr_data in attributes_dict.items():
+                if isinstance(attr_data, dict):
+                    attributes[attr_name] = EntityAttribute(
+                        name=attr_name,
+                        value=attr_data.get("value", ""),
+                        confidence=attr_data.get("confidence", 0.8),
+                        source=attr_data.get("source", ""),
+                        timestamp=attr_data.get("timestamp", datetime.now().isoformat())
+                    )
+                else:
+                    attributes[attr_name] = EntityAttribute(name=attr_name, value=str(attr_data))
             
             # Deserialize relationships
             relationships = []
-            for rel_data in record.get("relationships", []):
-                # Skip invalid relationship items (null target)
-                if not rel_data.get("target_id"):
-                    continue
-                    
-                relationships.append(
-                    EntityRelationship(
-                        relation_type=rel_data.get("relation_type", ""),
-                        target_entity=rel_data.get("target_id", ""),
-                        confidence=rel_data.get("confidence", 0.8),
-                        source=rel_data.get("source", ""),
-                        timestamp=rel_data.get("timestamp", datetime.now().isoformat())
-                    )
-                )
-            
+            relationships_raw = record.get("relationships", [])
+            if isinstance(relationships_raw, list):
+                for rel_data in relationships_raw:
+                    # Skip invalid relationship items (null target)
+                    if isinstance(rel_data, dict) and rel_data.get("target_id"):
+                        relationships.append(
+                            EntityRelationship(
+                                relation_type=rel_data.get("relation_type", ""),
+                                target_entity=rel_data.get("target_id", ""),
+                                confidence=rel_data.get("confidence", 0.8),
+                                source=rel_data.get("source", ""),
+                                timestamp=rel_data.get("timestamp", datetime.now().isoformat())
+                            )
+                        )
+            # --- End Reverted Section --- 
+
             # Create and return entity
             entity = Entity(
                 id=record.get("id", entity_id),
                 type=record.get("type", "unknown"),
                 attributes=attributes,
                 relationships=relationships,
+                tags=record.get("tags", []), # Get tags from record
                 source=record.get("source", ""),
                 importance=record.get("importance", 0.5),
                 last_updated=record.get("last_updated", datetime.now().isoformat())
@@ -985,4 +1064,162 @@ class Neo4jProvider(GraphDBProvider):
                     entity_count=len(entities)
                 ),
                 cause=e
-            ) 
+            )
+
+    async def search_entities(
+        self,
+        query: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 10
+    ) -> List[Entity]:
+        """Search for entities in Neo4j based on criteria.
+        
+        Args:
+            query: Optional text query to match against entity ID or attributes.
+            entity_type: Optional entity type to filter by.
+            tags: Optional list of tags to filter by.
+            limit: Maximum number of entities to return.
+            
+        Returns:
+            List of matching Entity objects.
+            
+        Raises:
+            ProviderError: If the search operation fails.
+        """
+        try:
+            cypher_parts = []
+            params = {}
+            where_clauses = []
+
+            cypher_parts.append("MATCH (e:Entity)")
+
+            if query and query.strip():
+                 # Adjusted query to handle potential non-string attributes safely
+                 where_clauses.append("(e.id CONTAINS $query OR ANY(prop_key IN keys(e) WHERE prop_key <> 'relationships' AND toString(e[prop_key]) CONTAINS $query))")
+                 params['query'] = query
+
+            if entity_type:
+                where_clauses.append("e.type = $type")
+                params['type'] = entity_type
+
+            if tags:
+                if isinstance(tags, str):
+                    tags = [tags]
+                where_clauses.append("ANY(tag IN e.tags WHERE tag IN $tags)")
+                params['tags'] = tags
+
+            if where_clauses:
+                cypher_parts.append("WHERE " + " AND ".join(where_clauses))
+
+            # Return node properties directly
+            cypher_parts.append(f"RETURN e LIMIT {limit}")
+
+            final_query = " ".join(cypher_parts)
+            logger.debug(f"Executing Neo4j search query: {final_query} with params: {params}")
+            query_results = await self._execute_query(final_query, params)
+
+            entities = []
+            for record in query_results:
+                if 'e' in record and isinstance(record['e'], dict):
+                    # Pass the node properties dictionary to the helper
+                    entity = self._convert_node_to_entity(record['e']) 
+                    if entity:
+                       entities.append(entity)
+                else:
+                    logger.warning(f"Unexpected record format in search_entities: {record}")
+            
+            logger.debug(f"Neo4j search found {len(entities)} entities.")
+            return entities
+
+        except Exception as e:
+            raise ProviderError(
+                message=f"Failed to search entities in Neo4j: {str(e)}",
+                provider_name=self.name,
+                context=ErrorContext.create(
+                    query=query, 
+                    entity_type=entity_type, 
+                    tags=tags, 
+                    limit=limit
+                ),
+                cause=e
+            )
+
+    async def _find_entities_by_type(self, entity_type: str) -> List[Dict[str, Any]]:
+        """Find entities by type in Neo4j."""
+        results = await self._execute_query(
+            """
+            MATCH (e:Entity)
+            WHERE e.type = $type
+            RETURN e.id as id, e as entity
+            """,
+            {"type": entity_type}
+        )
+        
+        return [{"id": r["id"], "entity": r["entity"]} for r in results]
+        
+    async def _find_entities_by_name(self, name: str) -> List[Dict[str, Any]]:
+        """Find entities by name in Neo4j."""
+        results = await self._execute_query(
+            """
+            MATCH (e:Entity)
+            WHERE e.attributes.name.value CONTAINS $name
+            RETURN e.id as id, e as entity
+            """,
+            {"name": name}
+        )
+        
+        return [{"id": r["id"], "entity": r["entity"]} for r in results]
+        
+    async def _find_neighbors(self, entity_id: str, relation_type: Optional[str]) -> List[Dict[str, Any]]:
+        """Find neighboring entities in Neo4j."""
+        query = """
+        MATCH (e:Entity {id: $id})-[r:RELATES_TO]->(neighbor:Entity)
+        WHERE $relation_type IS NULL OR r.relation_type = $relation_type
+        RETURN 
+            neighbor.id as id, 
+            r.relation_type as relation, 
+            neighbor as entity
+        """
+        
+        results = await self._execute_query(
+            query,
+            {
+                "id": entity_id,
+                "relation_type": relation_type
+            }
+        )
+        
+        return [
+            {
+                "id": r["id"],
+                "relation": r["relation"],
+                "entity": r["entity"]
+            } for r in results
+        ]
+        
+    async def _find_path(self, from_id: str, to_id: str, max_depth: int) -> List[Dict[str, Any]]:
+        """Find path between entities in Neo4j."""
+        query = f"""
+        MATCH path = shortestPath((source:Entity {{id: $from_id}})-[r:RELATES_TO*1..{max_depth}]->(target:Entity {{id: $to_id}}))
+        UNWIND nodes(path) as node
+        WITH node, index(nodes(path), node) as position
+        RETURN position, node.id as id, node as entity
+        ORDER BY position
+        """
+        
+        results = await self._execute_query(
+            query,
+            {
+                "from_id": from_id,
+                "to_id": to_id
+            }
+        )
+        
+        return [
+            {
+                "position": r["position"],
+                "id": r["id"],
+                "entity": r["entity"]
+            } for r in results
+        ] 

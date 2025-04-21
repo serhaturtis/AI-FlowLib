@@ -6,13 +6,17 @@ for Pinecone, a managed vector database service.
 
 import logging
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union
 import uuid
 
 from ...core.errors import ProviderError, ErrorContext
 from .base import VectorDBProvider, VectorDBProviderSettings, VectorMetadata, SimilaritySearchResult
 from ..decorators import provider
 from ..constants import ProviderType
+
+# Import embedding provider base and registry
+from ..embedding.base import EmbeddingProvider
+from ..registry import provider_registry
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,7 @@ class PineconeProviderSettings(VectorDBProviderSettings):
         shards: Number of shards for the index
         metadata_config: Metadata configuration for index creation
         api_timeout: API timeout in seconds
+        embedding_provider_name: Name of the embedding provider to use
     """
     
     # Pinecone connection settings
@@ -58,36 +63,39 @@ class PineconeProviderSettings(VectorDBProviderSettings):
     
     # API settings
     api_timeout: int = 20
+    embedding_provider_name: Optional[str] = "default_embedding"
 
+
+SettingsType = TypeVar('SettingsType', bound=PineconeProviderSettings)
 
 @provider(provider_type=ProviderType.VECTOR_DB, name="pinecone")
-class PineconeProvider(VectorDBProvider):
+class PineconeProvider(VectorDBProvider[PineconeProviderSettings]):
     """Pinecone implementation of the VectorDBProvider.
     
     This provider implements vector storage, retrieval, and similarity search
     using Pinecone, a managed vector database service.
     """
     
-    def __init__(self, name: str = "pinecone", settings: Optional[PineconeProviderSettings] = None):
+    def __init__(self, name: str = "pinecone", settings: Optional[Union[Dict[str, Any], PineconeProviderSettings]] = None):
         """Initialize Pinecone provider.
         
         Args:
             name: Unique provider name
             settings: Optional provider settings
         """
-        # Create settings first to avoid issues with _default_settings() method
-        settings = settings or PineconeProviderSettings(api_key="", environment="", index_name="")
-        
-        # Pass explicit settings to parent class
+        # Initialize VectorDBProvider base - it handles settings creation/assignment
         super().__init__(name=name, settings=settings)
         
+        # Base class now holds self.settings as PineconeProviderSettings object
+        
         # Store settings for local use
-        self._settings = settings
+        self._settings = self.settings
         self._client = None
         self._index = None
+        self._embedding_provider: Optional[EmbeddingProvider] = None
         
     async def _initialize(self) -> None:
-        """Initialize Pinecone client and index.
+        """Initialize Pinecone client, index, and embedding provider.
         
         Raises:
             ProviderError: If initialization fails
@@ -136,9 +144,26 @@ class PineconeProvider(VectorDBProvider):
             
             logger.info(f"Connected to Pinecone index: {self._settings.index_name}")
             
+            # Get and initialize the embedding provider
+            if self._settings.embedding_provider_name:
+                self._embedding_provider = await provider_registry.get(
+                    ProviderType.EMBEDDING,
+                    self._settings.embedding_provider_name
+                )
+                if not self._embedding_provider:
+                    raise ProviderError(f"Embedding provider '{self._settings.embedding_provider_name}' not found")
+                # Ensure it's initialized
+                if not self._embedding_provider.initialized:
+                    await self._embedding_provider.initialize()
+                logger.info(f"Using embedding provider: {self._settings.embedding_provider_name}")
+            else:
+                # Pinecone requires vectors, embedding provider is mandatory
+                raise ConfigurationError("embedding_provider_name must be specified in Pinecone settings")
+            
         except Exception as e:
             self._client = None
             self._index = None
+            self._embedding_provider = None
             raise ProviderError(
                 message=f"Failed to connect to Pinecone: {str(e)}",
                 provider_name=self.name,
@@ -154,6 +179,7 @@ class PineconeProvider(VectorDBProvider):
         """Close Pinecone connection."""
         self._index = None
         self._client = None
+        self._embedding_provider = None
         logger.info(f"Closed Pinecone connection for index: {self._settings.index_name}")
     
     async def create_collection(self, 
@@ -233,6 +259,31 @@ class PineconeProvider(VectorDBProvider):
         # Use default namespace if not specified
         namespace = collection_name or self._settings.namespace or ""
         
+        # Check dimension consistency if possible
+        if vectors and self._embedding_provider and hasattr(self._embedding_provider, 'embedding_dim'):
+             expected_dim = self._embedding_provider.embedding_dim
+             # Pinecone index dimension is fixed, compare against index stats if available
+             try:
+                 index_stats = self._index.describe_index_stats()
+                 actual_dim = index_stats.dimension
+                 if expected_dim and actual_dim and len(vectors[0]) != actual_dim:
+                     raise ProviderError(
+                         f"Vector dimension ({len(vectors[0])}) does not match Pinecone index dimension ({actual_dim}).",
+                         provider_name=self.name,
+                         context=ErrorContext.create(namespace=namespace)
+                     )
+                 elif expected_dim and actual_dim and expected_dim != actual_dim:
+                     logger.warning(f"Embedding provider dimension ({expected_dim}) differs from Pinecone index dimension ({actual_dim})")
+             except Exception as stat_err:
+                 logger.warning(f"Could not get Pinecone index stats to verify dimension: {stat_err}")
+                 # Fallback to checking vector length against expected
+                 if expected_dim and len(vectors[0]) != expected_dim:
+                      raise ProviderError(
+                         f"Vector dimension mismatch. Expected {expected_dim}, got {len(vectors[0])}.",
+                         provider_name=self.name,
+                         context=ErrorContext.create(namespace=namespace)
+                     )
+
         try:
             # Generate IDs if not provided
             ids = []
@@ -396,14 +447,14 @@ class PineconeProvider(VectorDBProvider):
         namespace = collection_name or self._settings.namespace or ""
         
         try:
-            # Execute query
+            # Perform similarity search using query vector
             results = self._index.query(
-                namespace=namespace,
                 vector=vector,
                 top_k=k,
-                include_values=True,
+                namespace=namespace,
+                filter=filter,
                 include_metadata=True,
-                filter=filter
+                include_values=False  # Don't include vectors in results by default
             )
             
             # Parse results
@@ -621,4 +672,50 @@ class PineconeProvider(VectorDBProvider):
                 provider_name=self.name,
                 context=ErrorContext.create(namespace=namespace),
                 cause=e
-            ) 
+            )
+
+    async def embed_and_search(self, 
+                               query_text: str, 
+                               k: int = 10, 
+                               collection_name: Optional[str] = None,
+                               filter: Optional[Dict[str, Any]] = None) -> List[SimilaritySearchResult]:
+        """Generate embedding for query text and search Pinecone.
+        
+        Args:
+            query_text: Text to search for
+            k: Number of results to return
+            collection_name: Optional collection name (namespace)
+            filter: Metadata filter
+            
+        Returns:
+            List of search results
+            
+        Raises:
+            ProviderError: If embedding or search fails
+        """
+        if not self._embedding_provider:
+            raise ProviderError(
+                "Embedding provider not available for text search.", 
+                provider_name=self.name
+            )
+            
+        # Generate embedding for the query text
+        try:
+            embedding_list = await self._embedding_provider.embed(query_text)
+            if not embedding_list:
+                raise ProviderError("Failed to generate embedding for query text.")
+            query_vector = embedding_list[0] # Use the first (only) embedding
+        except Exception as e:
+            raise ProviderError(
+                f"Failed to generate query embedding: {e}", 
+                provider_name=self.name, 
+                cause=e
+            )
+            
+        # Perform search using the generated vector
+        return await self.search_by_vector(
+            vector=query_vector,
+            k=k,
+            collection_name=collection_name,
+            filter=filter
+        ) 

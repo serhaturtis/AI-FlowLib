@@ -66,7 +66,7 @@ class VectorMemory(BaseMemory):
             if self._embedding_provider_name:
                 # Note: If there's a specific ProviderType for embeddings, use that instead
                 self._embedding_provider = await provider_registry.get(
-                    ProviderType.LLM,  # Assuming embeddings are provided by LLM providers
+                    ProviderType.EMBEDDING,  # Changed to EMBEDDING type
                     self._embedding_provider_name
                 )
                 
@@ -131,15 +131,8 @@ class VectorMemory(BaseMemory):
             
         try:
             # Call the embedding provider to get the embedding
-            if hasattr(self._embedding_provider, 'embed'):
+            # EmbeddingProvider base class guarantees the embed method
                 return await self._embedding_provider.embed(text)
-            elif hasattr(self._embedding_provider, 'get_embedding'):
-                return await self._embedding_provider.get_embedding(text)
-            else:
-                raise MemoryError(
-                    f"Embedding provider {self._embedding_provider_name} "
-                    f"does not have embed or get_embedding method"
-                )
         except Exception as e:
             raise MemoryError(f"Failed to get embedding for text: {str(e)}") from e
     
@@ -220,8 +213,13 @@ class VectorMemory(BaseMemory):
         try:
             # Generate embedding if the provider doesn't handle it
             embedding = None
-            if not hasattr(self._vector_provider, 'auto_embed') or not self._vector_provider.auto_embed:
-                embedding = await self._get_embedding(processed_value)
+            # Most vector DB providers likely won't auto-embed using our separate provider
+            # We will almost always need to generate the embedding here.
+            # if not hasattr(self._vector_provider, 'auto_embed') or not self._vector_provider.auto_embed:
+            embedding_list = await self._get_embedding(processed_value)
+            # _get_embedding returns List[List[float]], we need List[float] for single item
+            if embedding_list:
+                embedding = embedding_list[0]
             
             # Store in vector database
             await self._vector_provider.add_item(
@@ -316,12 +314,19 @@ class VectorMemory(BaseMemory):
             if filters:
                 metadata_filter.update(filters)
                 
-            # Perform the search
+            # Generate query embedding
+            query_embedding_list = await self._get_embedding(query)
+            if not query_embedding_list:
+                raise MemoryError("Failed to generate embedding for search query")
+            query_embedding = query_embedding_list[0] # Get the single query embedding
+            
+            # Search using vector provider
             search_results = await self._vector_provider.search(
-                query=query,
-                metadata_filter=metadata_filter,
-                limit=limit,
-                min_score=min_score
+                query_vector=query_embedding,  # Changed from query=query_embedding
+                top_k=limit,  # Changed from limit=limit
+                filter=metadata_filter,  # Changed from metadata_filter=metadata_filter
+                include_vectors=False,
+                index_name=context
             )
             
             # Convert to MemorySearchResult objects

@@ -114,13 +114,35 @@ class Provider(ABC, Generic[T]):
             provider_type: Optional provider type for categorization
         """
         self.name = name
-        self.settings = settings or self._default_settings()
         self.provider_type = provider_type or self.__class__.__name__
         self._initialized = False
         self._setup_lock = asyncio.Lock()
         
+        # --- New Settings Handling --- 
+        try:
+            settings_type = self.__class__.__orig_bases__[0].__args__[0]
+            if settings is None:
+                self.settings = settings_type() # Use default if none provided
+            elif isinstance(settings, dict):
+                self.settings = settings_type(**settings) # Parse dict into model
+            elif isinstance(settings, settings_type):
+                self.settings = settings # Use directly if already correct type
+            else:
+                 raise TypeError(f"Invalid settings type provided. Expected dict or {settings_type.__name__}, got {type(settings).__name__}")
+        except (AttributeError, IndexError, TypeError) as e:
+            # Reraise type error if generic hint is missing
+            if isinstance(e, (AttributeError, IndexError)):
+                raise TypeError(
+                    f"Provider class {self.__class__.__name__} must specify settings type as a generic parameter. "
+                    f"Example: class MyProvider(Provider[MySettings]): ..."
+                ) from e
+            else:
+                # Reraise other type errors (e.g. from parsing)
+                raise e
+        # --------------------------
+
         # No self-registration
-        logger.debug(f"Created provider: {name} ({self.provider_type})")
+        logger.debug(f"Created provider: {name} ({self.provider_type}) with settings: {self.settings}")
     
     @property
     def initialized(self) -> bool:

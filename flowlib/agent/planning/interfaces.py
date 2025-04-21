@@ -5,13 +5,13 @@ This module defines the interfaces used for planning operations, ensuring
 consistent method signatures across different planning implementations.
 """
 
-from typing import Dict, Any, Optional, Protocol, List, Type
+from typing import Dict, Any, Optional, Protocol
 from pydantic import BaseModel
 from ..planning.models import (
     PlanningResult,
-    PlanningValidation,
-    ExecutionContext
+    PlanningValidation
 )
+from ..models.state import AgentState
 
 class PlanningInterface(Protocol):
     """Interface for planning operations.
@@ -25,11 +25,11 @@ class PlanningInterface(Protocol):
     3. Model providers are properly configured
     """
     
-    async def plan(self, context: ExecutionContext) -> PlanningResult:
+    async def plan(self, context: AgentState) -> PlanningResult:
         """Generate a plan based on the current context and available flows.
         
         Args:
-            context: Current execution context with state, history, etc.
+            context: Current agent state with task description, history, etc.
             
         Returns:
             PlanningResult with selected flow and metadata
@@ -56,7 +56,7 @@ class PlanningInterface(Protocol):
     
     async def generate_inputs(
         self,
-        state: 'AgentState',
+        state: AgentState,
         flow_name: str,
         planning_result: Dict[str, Any],
         memory_context: str,

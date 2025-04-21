@@ -20,5 +20,6 @@ class ProviderType(str, Enum):
     MESSAGE_QUEUE = "message_queue"
     GPU = "gpu"
     API = "api"
-    CONVERSATION = "conversation"
-    GRAPH_DB = "graph_db"  # Graph database provider 
+    GRAPH_DB = "graph_db"  # Graph database provider
+    AGENT_SERVICE = "agent_service"
+    EMBEDDING = "embedding"  # Added embedding provider type 
